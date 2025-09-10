@@ -24,8 +24,7 @@ const corsOptions = {
       'http://localhost:8080', 
       'http://localhost:3000', 
       'https://appoinments.gsmarena1.com', 
-      'https://gsmarena1.com',
-      'https://www.gsmarena1.com'
+      'https://31.97.206.5:2025',
     ];
     
     if (allowedOrigins.indexOf(origin) !== -1) {
@@ -248,13 +247,16 @@ async function initializeDatabase() {
     await dbConnection.query(`
       CREATE TABLE IF NOT EXISTS available_dates (
         id INT AUTO_INCREMENT PRIMARY KEY,
-        date DATE NOT NULL UNIQUE,
+        date DATE NOT NULL,
+        service_category_id INT NULL,
         is_available BOOLEAN DEFAULT TRUE,
         max_appointments INT DEFAULT 10,
         created_by INT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (service_category_id) REFERENCES service_categories(id) ON DELETE CASCADE,
+        INDEX idx_date_category (date, service_category_id)
       )
     `);
     
@@ -750,6 +752,88 @@ async function initializeDatabase() {
       }
     } catch (error) {
       console.log('Error during room_types whats_included migration:', error.message);
+    }
+
+    // Migration: Add service_category_id to available_dates table if it doesn't exist
+    try {
+      const [serviceCategoryColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM available_dates LIKE 'service_category_id'
+      `);
+      
+      if (serviceCategoryColumn.length === 0) {
+        console.log('Adding service_category_id column to available_dates table...');
+        
+        // First, drop the unique constraint on date if it exists
+        try {
+          await dbConnection.query(`
+            ALTER TABLE available_dates DROP INDEX date
+          `);
+          console.log('Dropped unique constraint on date column');
+        } catch (error) {
+          console.log('Unique constraint on date column might not exist:', error.message);
+        }
+        
+        // Add service_category_id column
+        await dbConnection.query(`
+          ALTER TABLE available_dates 
+          ADD COLUMN service_category_id INT NULL AFTER date
+        `);
+        
+        // Add foreign key constraint
+        await dbConnection.query(`
+          ALTER TABLE available_dates 
+          ADD CONSTRAINT fk_available_dates_service_category 
+          FOREIGN KEY (service_category_id) REFERENCES service_categories(id) ON DELETE CASCADE
+        `);
+        
+        // Add index for better performance
+        await dbConnection.query(`
+          ALTER TABLE available_dates 
+          ADD INDEX idx_date_category (date, service_category_id)
+        `);
+        
+        console.log('Migration completed: available_dates table now includes service_category_id column');
+      } else {
+        console.log('service_category_id column already exists in available_dates table');
+      }
+    } catch (error) {
+      console.log('Error during available_dates service_category_id migration:', error.message);
+    }
+
+    // Migration: Add service_category_id to available_time_slots table if it doesn't exist
+    try {
+      const [timeSlotsServiceCategoryColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM available_time_slots LIKE 'service_category_id'
+      `);
+      
+      if (timeSlotsServiceCategoryColumn.length === 0) {
+        console.log('Adding service_category_id column to available_time_slots table...');
+        
+        // Add service_category_id column
+        await dbConnection.query(`
+          ALTER TABLE available_time_slots 
+          ADD COLUMN service_category_id INT NULL AFTER date
+        `);
+        
+        // Add foreign key constraint
+        await dbConnection.query(`
+          ALTER TABLE available_time_slots 
+          ADD CONSTRAINT fk_time_slots_service_category 
+          FOREIGN KEY (service_category_id) REFERENCES service_categories(id) ON DELETE CASCADE
+        `);
+        
+        // Add index for better performance
+        await dbConnection.query(`
+          ALTER TABLE available_time_slots 
+          ADD INDEX idx_time_slots_date_category (date, service_category_id)
+        `);
+        
+        console.log('Migration completed: available_time_slots table now includes service_category_id column');
+      } else {
+        console.log('service_category_id column already exists in available_time_slots table');
+      }
+    } catch (error) {
+      console.log('Error during available_time_slots service_category_id migration:', error.message);
     }
 
     // Migration: Add discount_price field to service_pricing table if it doesn't exist
@@ -2147,17 +2231,44 @@ app.post('/api/user/support-tickets', authenticateToken, async (req, res) => {
 // Get all available dates (public endpoint)
 app.get('/api/available-dates', async (req, res) => {
   try {
-    const [rows] = await pool.execute(
-      `SELECT 
-        id, 
-        DATE_FORMAT(date, "%Y-%m-%d") as date,
-        is_available, 
-        max_appointments, 
-        created_at 
-      FROM available_dates 
-      WHERE is_available = TRUE AND date >= CURDATE() 
-      ORDER BY date ASC`
-    );
+    const { categoryId } = req.query;
+    
+    let query = `
+      SELECT 
+        ad.id, 
+        DATE_FORMAT(ad.date, "%Y-%m-%d") as date,
+        DATE_FORMAT(ad.date, "%M %d, %Y") as formatted_date,
+        DATE_FORMAT(ad.date, "%W") as day_name,
+        DATE_FORMAT(ad.date, "%a") as day_short,
+        DATE_FORMAT(ad.date, "%b") as month_short,
+        DATE_FORMAT(ad.date, "%d") as day_number,
+        DATE_FORMAT(ad.date, "%Y") as year,
+        ad.is_available, 
+        ad.max_appointments, 
+        ad.created_at,
+        sc.name as service_category_name,
+        sc.slug as service_category_slug
+      FROM available_dates ad
+      LEFT JOIN service_categories sc ON ad.service_category_id = sc.id
+      WHERE ad.is_available = TRUE AND ad.date >= CURDATE()
+    `;
+    
+    const params = [];
+    
+    if (categoryId) {
+      if (categoryId === 'null' || categoryId === '') {
+        // Show only dates with no specific category (general dates)
+        query += ' AND ad.service_category_id IS NULL';
+      } else {
+        // Show only dates for the specific category
+        query += ' AND ad.service_category_id = ?';
+        params.push(categoryId);
+      }
+    }
+    
+    query += ' ORDER BY ad.date ASC';
+    
+    const [rows] = await pool.execute(query, params);
     
     console.log('🔍 Public API - Available dates:', rows);
     return res.json(rows);
@@ -2174,7 +2285,7 @@ app.get('/api/available-time-slots', async (req, res) => {
       return res.status(500).json({ message: 'Database not available' });
     }
     
-    const { date } = req.query;
+    const { date, categoryId } = req.query;
     
     if (!date) {
       return res.status(400).json({ message: 'Date parameter is required' });
@@ -2182,15 +2293,31 @@ app.get('/api/available-time-slots', async (req, res) => {
 
     // Extract just the date part if datetime string is passed
     const dateOnly = date.includes('T') ? date.split('T')[0] : date;
-    console.log('🔍 Public API - Time slots for date:', dateOnly);
+    console.log('🔍 Public API - Time slots for date:', dateOnly, 'categoryId:', categoryId);
 
-    const [rows] = await pool.execute(
-      `SELECT id, start_time, end_time, is_available, extra_price, date
-       FROM available_time_slots 
-       WHERE date = ? AND is_available = 1
-       ORDER BY start_time ASC`,
-      [dateOnly]
-    );
+    let query = `SELECT id, start_time, end_time, is_available, extra_price, date, service_category_id
+                 FROM available_time_slots 
+                 WHERE date = ? AND is_available = 1`;
+    let params = [dateOnly];
+    
+    // Category filtering logic
+    if (categoryId) {
+      if (categoryId === 'null' || categoryId === '') {
+        // Show only time slots with no specific category (general time slots)
+        query += ` AND service_category_id IS NULL`;
+      } else {
+        // Show only time slots for the specific category
+        query += ` AND service_category_id = ?`;
+        params.push(categoryId);
+      }
+    } else {
+      // If no categoryId provided, show all time slots (backward compatibility)
+      // This case handles when category filtering is not used
+    }
+    
+    query += ` ORDER BY start_time ASC`;
+
+    const [rows] = await pool.execute(query, params);
 
     console.log('🔍 Public API - Found time slots:', rows.length);
     res.json(rows);
@@ -2205,19 +2332,23 @@ app.get('/api/admin/available-dates', authenticateToken, isAdmin, async (req, re
   try {
     const [rows] = await pool.execute(
       `SELECT 
-        id, 
-        DATE_FORMAT(date, "%Y-%m-%d") as date,
-        DATE_FORMAT(date, "%M %d, %Y") as formatted_date,
-        DATE_FORMAT(date, "%W") as day_name,
-        DATE_FORMAT(date, "%a") as day_short,
-        DATE_FORMAT(date, "%b") as month_short,
-        DATE_FORMAT(date, "%d") as day_number,
-        DATE_FORMAT(date, "%Y") as year,
-        is_available, 
-        max_appointments, 
-        created_at 
-      FROM available_dates 
-      ORDER BY date ASC`
+        ad.id, 
+        DATE_FORMAT(ad.date, "%Y-%m-%d") as date,
+        DATE_FORMAT(ad.date, "%M %d, %Y") as formatted_date,
+        DATE_FORMAT(ad.date, "%W") as day_name,
+        DATE_FORMAT(ad.date, "%a") as day_short,
+        DATE_FORMAT(ad.date, "%b") as month_short,
+        DATE_FORMAT(ad.date, "%d") as day_number,
+        DATE_FORMAT(ad.date, "%Y") as year,
+        ad.is_available, 
+        ad.max_appointments, 
+        ad.created_at,
+        ad.service_category_id,
+        sc.name as service_category_name,
+        sc.slug as service_category_slug
+      FROM available_dates ad
+      LEFT JOIN service_categories sc ON ad.service_category_id = sc.id
+      ORDER BY ad.date ASC`
     );
     
     console.log('🔍 Raw rows from MySQL:', rows);
@@ -2232,15 +2363,15 @@ app.get('/api/admin/available-dates', authenticateToken, isAdmin, async (req, re
 // Add new available date (admin only)
 app.post('/api/admin/available-dates', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const { date, is_available, max_appointments } = req.body;
+    const { date, is_available, max_appointments, service_category_id } = req.body;
     
     if (!date) {
       return res.status(400).json({ message: 'Date is required' });
     }
     
     const [result] = await pool.execute(
-      'INSERT INTO available_dates (date, is_available, max_appointments, created_by) VALUES (?, ?, ?, ?)',
-      [date, is_available !== undefined ? is_available : true, max_appointments || 10, req.user.id]
+      'INSERT INTO available_dates (date, is_available, max_appointments, service_category_id, created_by) VALUES (?, ?, ?, ?, ?)',
+      [date, is_available !== undefined ? is_available : true, max_appointments || 10, service_category_id || null, req.user.id]
     );
     
     return res.status(201).json({ 
@@ -2260,7 +2391,7 @@ app.post('/api/admin/available-dates', authenticateToken, isAdmin, async (req, r
 app.put('/api/admin/available-dates/:id', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { date, is_available, max_appointments } = req.body;
+    const { date, is_available, max_appointments, service_category_id } = req.body;
     
     let updateQuery = 'UPDATE available_dates SET ';
     const updateValues = [];
@@ -2278,6 +2409,11 @@ app.put('/api/admin/available-dates/:id', authenticateToken, isAdmin, async (req
     if (max_appointments !== undefined) {
       updateQuery += 'max_appointments = ?, ';
       updateValues.push(max_appointments);
+    }
+    
+    if (service_category_id !== undefined) {
+      updateQuery += 'service_category_id = ?, ';
+      updateValues.push(service_category_id);
     }
     
     // Remove trailing comma and space
@@ -2315,22 +2451,37 @@ app.get('/api/admin/available-time-slots', authenticateToken, isAdmin, async (re
       return res.status(500).json({ message: 'Database not available' });
     }
     
-    const { date } = req.query;
+    const { date, categoryId } = req.query;
     let query = `
-      SELECT id, start_time, end_time, is_available, extra_price, created_at, date
-      FROM available_time_slots
+      SELECT ats.id, ats.start_time, ats.end_time, ats.is_available, ats.extra_price, 
+             ats.created_at, ats.date, ats.service_category_id,
+             sc.name as service_category_name, sc.slug as service_category_slug
+      FROM available_time_slots ats
+      LEFT JOIN service_categories sc ON ats.service_category_id = sc.id
     `;
+    let params = [];
     
-    if (date) {
-      query += ' WHERE DATE(date) = ?';
-      query += ' ORDER BY start_time ASC';
-      const [rows] = await pool.execute(query, [date]);
-      res.json(rows);
-    } else {
-      query += ' ORDER BY date DESC, start_time ASC';
-      const [rows] = await pool.execute(query);
-      res.json(rows);
+    if (date || categoryId) {
+      query += ' WHERE ';
+      let conditions = [];
+      
+      if (date) {
+        conditions.push('DATE(ats.date) = ?');
+        params.push(date);
+      }
+      
+      if (categoryId) {
+        conditions.push('(ats.service_category_id = ? OR ats.service_category_id IS NULL)');
+        params.push(categoryId);
+      }
+      
+      query += conditions.join(' AND ');
     }
+    
+    query += ' ORDER BY ats.date DESC, ats.start_time ASC';
+    
+    const [rows] = await pool.execute(query, params);
+    res.json(rows);
   } catch (error) {
     console.error('Error fetching time slots:', error);
     res.status(500).json({ message: 'Internal server error' });
@@ -2344,7 +2495,7 @@ app.post('/api/admin/available-time-slots', authenticateToken, isAdmin, async (r
       return res.status(500).json({ message: 'Database not available' });
     }
     
-    const { start_time, end_time, is_available, extra_price = 0, date } = req.body;
+    const { start_time, end_time, is_available, extra_price = 0, date, service_category_id } = req.body;
     
     // Validate required fields
     if (!start_time || !end_time || !date) {
@@ -2362,16 +2513,17 @@ app.post('/api/admin/available-time-slots', authenticateToken, isAdmin, async (r
       return res.status(400).json({ message: 'End time must be after start time' });
     }
 
-    // Check for overlapping time slots on the same date
+    // Check for overlapping time slots on the same date and category
     const [overlapping] = await pool.execute(
       `SELECT id FROM available_time_slots 
        WHERE date = ? AND is_available = 1 
+       AND (service_category_id = ? OR (service_category_id IS NULL AND ? IS NULL))
        AND (
          (start_time <= ? AND end_time > ?) OR
          (start_time < ? AND end_time >= ?) OR
          (start_time >= ? AND end_time <= ?)
        )`,
-      [date, start_time, start_time, end_time, end_time, start_time, end_time]
+      [date, service_category_id, service_category_id, start_time, start_time, end_time, end_time, start_time, end_time]
     );
 
     if (overlapping.length > 0) {
@@ -2380,8 +2532,8 @@ app.post('/api/admin/available-time-slots', authenticateToken, isAdmin, async (r
 
     // Insert new time slot
     const [result] = await pool.execute(
-      'INSERT INTO available_time_slots (start_time, end_time, is_available, extra_price, date) VALUES (?, ?, ?, ?, ?)',
-      [start_time, end_time, is_available, extra_price, date]
+      'INSERT INTO available_time_slots (start_time, end_time, is_available, extra_price, date, service_category_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [start_time, end_time, is_available, extra_price, date, service_category_id]
     );
 
     res.status(201).json({
@@ -2391,6 +2543,7 @@ app.post('/api/admin/available-time-slots', authenticateToken, isAdmin, async (r
       is_available,
       extra_price,
       date,
+      service_category_id,
       message: 'Time slot created successfully'
     });
   } catch (error) {
@@ -2407,7 +2560,7 @@ app.put('/api/admin/available-time-slots/:id', authenticateToken, isAdmin, async
     }
     
     const { id } = req.params;
-    const { start_time, end_time, is_available, extra_price } = req.body;
+    const { start_time, end_time, is_available, extra_price, service_category_id } = req.body;
 
     // Check if time slot exists
     const [existing] = await pool.execute(
@@ -2461,9 +2614,10 @@ app.put('/api/admin/available-time-slots/:id', authenticateToken, isAdmin, async
            end_time = COALESCE(?, end_time),
            is_available = COALESCE(?, is_available),
            extra_price = COALESCE(?, extra_price),
+           service_category_id = ?,
            updated_at = NOW()
        WHERE id = ?`,
-      [start_time, end_time, is_available, extra_price, id]
+      [start_time, end_time, is_available, extra_price, service_category_id, id]
     );
 
     if (result.affectedRows === 0) {
