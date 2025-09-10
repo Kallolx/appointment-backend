@@ -443,6 +443,7 @@ async function initializeDatabase() {
         slug VARCHAR(50) NOT NULL,
         image_url VARCHAR(255),
         description TEXT,
+        whats_included JSON DEFAULT NULL,
         is_active BOOLEAN DEFAULT TRUE,
         sort_order INT DEFAULT 0,
         created_by INT,
@@ -463,6 +464,7 @@ async function initializeDatabase() {
         category_id INT NOT NULL,
         image_url VARCHAR(255),
         description TEXT,
+        rating_text VARCHAR(100) DEFAULT '4.7/5 (15K bookings)',
         is_active BOOLEAN DEFAULT TRUE,
         sort_order INT DEFAULT 0,
         created_by INT,
@@ -592,6 +594,8 @@ async function initializeDatabase() {
         room_type_id INT NOT NULL,
         service_item_id INT NULL,
         price DECIMAL(10, 2) NOT NULL,
+        discount_price DECIMAL(10, 2) NULL,
+        max_orders INT DEFAULT NULL,
         description TEXT,
         is_special BOOLEAN DEFAULT FALSE,
         is_active BOOLEAN DEFAULT TRUE,
@@ -604,6 +608,31 @@ async function initializeDatabase() {
         FOREIGN KEY (service_item_id) REFERENCES service_items(id) ON DELETE CASCADE,
         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
         UNIQUE KEY unique_service_pricing (service_category_id, property_type_id, room_type_id, service_item_id)
+      )
+    `);
+
+    // Create website_settings table for storing website configuration
+    await dbConnection.query(`
+      CREATE TABLE IF NOT EXISTS website_settings (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        site_name VARCHAR(255) NOT NULL DEFAULT 'JL Services',
+        logo_url VARCHAR(500) DEFAULT '/jl-logo.svg',
+        tagline VARCHAR(255) DEFAULT 'Your trusted home services partner',
+        primary_color VARCHAR(7) DEFAULT '#FFD03E',
+        facebook_url VARCHAR(500) DEFAULT '',
+        instagram_url VARCHAR(500) DEFAULT '',
+        twitter_url VARCHAR(500) DEFAULT '',
+        linkedin_url VARCHAR(500) DEFAULT '',
+        google_url VARCHAR(500) DEFAULT '',
+        whatsapp_url VARCHAR(500) DEFAULT '',
+        contact_address TEXT DEFAULT '1403, Fortune Executive Tower, Cluster T, JLT, Dubai, UAE.',
+        contact_phone VARCHAR(50) DEFAULT '+971 4 506 1500',
+        contact_email VARCHAR(255) DEFAULT 'support@servicemarket.com',
+        is_active BOOLEAN DEFAULT TRUE,
+        created_by INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
       )
     `);
     
@@ -649,6 +678,167 @@ async function initializeDatabase() {
       }
     } catch (error) {
       console.log('Error during appointments table migration:', error.message);
+    }
+
+    // Migration: Add contact fields to website_settings table if they don't exist
+    try {
+      const [contactAddressColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM website_settings LIKE 'contact_address'
+      `);
+      
+      if (contactAddressColumn.length === 0) {
+        console.log('Adding contact fields to website_settings table...');
+        
+        await dbConnection.query(`
+          ALTER TABLE website_settings 
+          ADD COLUMN contact_address TEXT DEFAULT '1403, Fortune Executive Tower, Cluster T, JLT, Dubai, UAE.'
+        `);
+        
+        await dbConnection.query(`
+          ALTER TABLE website_settings 
+          ADD COLUMN contact_phone VARCHAR(50) DEFAULT '+971 4 506 1500'
+        `);
+        
+        await dbConnection.query(`
+          ALTER TABLE website_settings 
+          ADD COLUMN contact_email VARCHAR(255) DEFAULT 'support@servicemarket.com'
+        `);
+        
+        console.log('Migration completed: website_settings table now includes contact fields');
+      } else {
+        console.log('Contact fields already exist in website_settings table');
+      }
+    } catch (error) {
+      console.log('Error during website_settings contact fields migration:', error.message);
+    }
+
+    // Migration: Add rating_text field to service_items table if it doesn't exist
+    try {
+      const [ratingTextColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM service_items LIKE 'rating_text'
+      `);
+      
+      if (ratingTextColumn.length === 0) {
+        console.log('Adding rating_text column to service_items table...');
+        await dbConnection.query(`
+          ALTER TABLE service_items 
+          ADD COLUMN rating_text VARCHAR(100) DEFAULT '4.7/5 (15K bookings)'
+        `);
+        console.log('Migration completed: service_items table now includes rating_text column');
+      } else {
+        console.log('rating_text column already exists in service_items table');
+      }
+    } catch (error) {
+      console.log('Error during service_items rating_text migration:', error.message);
+    }
+
+    // Migration: Add whats_included field to room_types table if it doesn't exist
+    try {
+      const [whatsIncludedColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM room_types LIKE 'whats_included'
+      `);
+      
+      if (whatsIncludedColumn.length === 0) {
+        console.log('Adding whats_included column to room_types table...');
+        await dbConnection.query(`
+          ALTER TABLE room_types 
+          ADD COLUMN whats_included JSON DEFAULT NULL
+        `);
+        console.log('Migration completed: room_types table now includes whats_included column');
+      } else {
+        console.log('whats_included column already exists in room_types table');
+      }
+    } catch (error) {
+      console.log('Error during room_types whats_included migration:', error.message);
+    }
+
+    // Migration: Add discount_price field to service_pricing table if it doesn't exist
+    try {
+      const [columns] = await dbConnection.query(
+        'SHOW COLUMNS FROM service_pricing LIKE \'discount_price\''
+      );
+      if (columns.length === 0) {
+        console.log('Adding discount_price column to service_pricing table...');
+        await dbConnection.query(`
+          ALTER TABLE service_pricing 
+          ADD COLUMN discount_price DECIMAL(10, 2) NULL AFTER price
+        `);
+        console.log('Migration completed: service_pricing table now includes discount_price column');
+      } else {
+        console.log('discount_price column already exists in service_pricing table');
+      }
+    } catch (error) {
+      console.log('Error during service_pricing discount_price migration:', error.message);
+    }
+
+    // Migration: Add max_orders field to service_pricing table if it doesn't exist
+    try {
+      const [columns] = await dbConnection.query(
+        'SHOW COLUMNS FROM service_pricing LIKE \'max_orders\''
+      );
+      if (columns.length === 0) {
+        console.log('Adding max_orders column to service_pricing table...');
+        await dbConnection.query(`
+          ALTER TABLE service_pricing 
+          ADD COLUMN max_orders INT DEFAULT NULL
+        `);
+        console.log('Migration completed: service_pricing table now includes max_orders column');
+      } else {
+        console.log('max_orders column already exists in service_pricing table');
+      }
+    } catch (error) {
+      console.log('Error during service_pricing max_orders migration:', error.message);
+    }
+
+    // Migration: Add slug columns to appointments table if they don't exist
+    try {
+      const [propertyTypeSlugColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM appointments LIKE 'property_type_slug'
+      `);
+      
+      if (propertyTypeSlugColumn.length === 0) {
+        console.log('Adding slug columns to appointments table...');
+        
+        // Add property_type_slug column
+        await dbConnection.query(`
+          ALTER TABLE appointments 
+          ADD COLUMN property_type_slug VARCHAR(100)
+        `);
+        
+        // Add room_type_slug column
+        await dbConnection.query(`
+          ALTER TABLE appointments 
+          ADD COLUMN room_type_slug VARCHAR(100)
+        `);
+        
+        // Add service_category_slug column
+        await dbConnection.query(`
+          ALTER TABLE appointments 
+          ADD COLUMN service_category_slug VARCHAR(100)
+        `);
+        
+        // Add extra fields for better order tracking
+        await dbConnection.query(`
+          ALTER TABLE appointments 
+          ADD COLUMN extra_price DECIMAL(10, 2) DEFAULT 0.00
+        `);
+        
+        await dbConnection.query(`
+          ALTER TABLE appointments 
+          ADD COLUMN cod_fee DECIMAL(10, 2) DEFAULT 0.00
+        `);
+        
+        await dbConnection.query(`
+          ALTER TABLE appointments 
+          ADD COLUMN payment_method VARCHAR(50)
+        `);
+        
+        console.log('Migration completed: appointments table now includes slug columns and payment tracking fields');
+      } else {
+        console.log('Slug columns already exist in appointments table');
+      }
+    } catch (error) {
+      console.log('Error during appointments slug columns migration:', error.message);
     }
     
     // Seed initial data
@@ -960,6 +1150,18 @@ async function seedInitialData(connection) {
         }
       }
       console.log('Service pricing seeded successfully');
+    }
+
+    // Check if website settings already exist
+    const [websiteSettingsCount] = await connection.query('SELECT COUNT(*) as count FROM website_settings');
+    
+    if (websiteSettingsCount[0].count === 0) {
+      console.log('Seeding initial website settings...');
+      await connection.query(
+        'INSERT INTO website_settings (site_name, logo_url, tagline, primary_color) VALUES (?, ?, ?, ?)',
+        ['JL Services', '/jl-logo.svg', 'Your trusted home services partner', '#FFD03E']
+      );
+      console.log('Website settings seeded successfully');
     }
     
   } catch (error) {
@@ -1281,7 +1483,8 @@ app.get('/api/user/appointments', authenticateToken, async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT 
         id, user_id, service, appointment_date, appointment_time, status, 
-        location, price, notes, room_type, property_type, quantity, service_category,
+        location, price, notes, room_type, room_type_slug, property_type, property_type_slug, 
+        quantity, service_category, service_category_slug, extra_price, cod_fee, payment_method,
         created_at, updated_at
        FROM appointments WHERE user_id = ? ORDER BY appointment_date DESC, appointment_time DESC`,
       [req.user.id]
@@ -1302,7 +1505,8 @@ app.get('/api/user/appointments/:id', authenticateToken, async (req, res) => {
     const [rows] = await pool.execute(
       `SELECT 
         id, user_id, service, appointment_date, appointment_time, status, 
-        location, price, notes, room_type, property_type, quantity, service_category,
+        location, price, notes, room_type, room_type_slug, property_type, property_type_slug, 
+        quantity, service_category, service_category_slug, extra_price, cod_fee, payment_method,
         created_at, updated_at
        FROM appointments WHERE id = ? AND user_id = ?`,
       [id, req.user.id]
@@ -1534,9 +1738,15 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
       price, 
       notes,
       room_type,
+      room_type_slug,
       property_type,
+      property_type_slug,
       quantity,
       service_category,
+      service_category_slug,
+      extra_price,
+      cod_fee,
+      payment_method,
       status
     } = req.body;
     
@@ -1547,6 +1757,15 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
       appointment_time,
       location,
       price,
+      room_type,
+      room_type_slug,
+      property_type,
+      property_type_slug,
+      service_category,
+      service_category_slug,
+      extra_price,
+      cod_fee,
+      payment_method,
       status,
       user_id: req.user.id
     });
@@ -1575,11 +1794,13 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
     // Convert location object to JSON string
     const locationJSON = JSON.stringify(location);
     
-    // Insert new appointment with new fields
+    // Insert new appointment with new fields including slugs
     const [result] = await pool.execute(
       `INSERT INTO appointments 
-       (user_id, service, appointment_date, appointment_time, location, price, notes, room_type, property_type, quantity, service_category, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (user_id, service, appointment_date, appointment_time, location, price, notes, 
+        room_type, room_type_slug, property_type, property_type_slug, quantity, 
+        service_category, service_category_slug, extra_price, cod_fee, payment_method, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id, 
         service, 
@@ -1589,9 +1810,15 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
         price, 
         notes || null,
         room_type || null,
+        room_type_slug || null,
         property_type || null,
+        property_type_slug || null,
         quantity || 1,
         service_category || null,
+        service_category_slug || null,
+        extra_price || 0.00,
+        cod_fee || 0.00,
+        payment_method || null,
         status || 'pending'
       ]
     );
@@ -1864,23 +2091,6 @@ app.delete('/api/user/addresses/:id', authenticateToken, async (req, res) => {
         );
       }
     }
-
-    // Seed page_contents default entries if not present
-    try {
-      const defaultPages = [
-        { slug: 'footer', title: 'Footer', content: JSON.stringify({ year: new Date().getFullYear(), company: 'Your Company', links: [] }) },
-        { slug: 'faq', title: 'FAQ', content: JSON.stringify({ sections: [] }) },
-        { slug: 'terms', title: 'Terms', content: JSON.stringify({ body: '' }) },
-        { slug: 'privacy', title: 'Privacy', content: JSON.stringify({ body: '' }) },
-        { slug: 'careers', title: 'Careers', content: JSON.stringify({ jobs: [] }) }
-      ];
-
-      for (const p of defaultPages) {
-        await connection.query('INSERT IGNORE INTO page_contents (slug, title, content) VALUES (?, ?, ?)', [p.slug, p.title, p.content]);
-      }
-    } catch (err) {
-      console.log('Error seeding page_contents:', err.message);
-    }
     
     return res.json({ message: 'Address deleted successfully' });
   } catch (error) {
@@ -1938,11 +2148,18 @@ app.post('/api/user/support-tickets', authenticateToken, async (req, res) => {
 app.get('/api/available-dates', async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      `SELECT * FROM available_dates 
-       WHERE is_available = TRUE AND date >= CURDATE() 
-       ORDER BY date ASC`
+      `SELECT 
+        id, 
+        DATE_FORMAT(date, "%Y-%m-%d") as date,
+        is_available, 
+        max_appointments, 
+        created_at 
+      FROM available_dates 
+      WHERE is_available = TRUE AND date >= CURDATE() 
+      ORDER BY date ASC`
     );
     
+    console.log('🔍 Public API - Available dates:', rows);
     return res.json(rows);
   } catch (error) {
     console.error('Error fetching available dates:', error);
@@ -1963,14 +2180,19 @@ app.get('/api/available-time-slots', async (req, res) => {
       return res.status(400).json({ message: 'Date parameter is required' });
     }
 
+    // Extract just the date part if datetime string is passed
+    const dateOnly = date.includes('T') ? date.split('T')[0] : date;
+    console.log('🔍 Public API - Time slots for date:', dateOnly);
+
     const [rows] = await pool.execute(
       `SELECT id, start_time, end_time, is_available, extra_price, date
        FROM available_time_slots 
-       WHERE DATE(date) = ? AND is_available = 1
+       WHERE date = ? AND is_available = 1
        ORDER BY start_time ASC`,
-      [date]
+      [dateOnly]
     );
 
+    console.log('🔍 Public API - Found time slots:', rows.length);
     res.json(rows);
   } catch (error) {
     console.error('Error fetching available time slots:', error);
@@ -1982,8 +2204,23 @@ app.get('/api/available-time-slots', async (req, res) => {
 app.get('/api/admin/available-dates', authenticateToken, isAdmin, async (req, res) => {
   try {
     const [rows] = await pool.execute(
-      'SELECT * FROM available_dates ORDER BY date ASC'
+      `SELECT 
+        id, 
+        DATE_FORMAT(date, "%Y-%m-%d") as date,
+        DATE_FORMAT(date, "%M %d, %Y") as formatted_date,
+        DATE_FORMAT(date, "%W") as day_name,
+        DATE_FORMAT(date, "%a") as day_short,
+        DATE_FORMAT(date, "%b") as month_short,
+        DATE_FORMAT(date, "%d") as day_number,
+        DATE_FORMAT(date, "%Y") as year,
+        is_available, 
+        max_appointments, 
+        created_at 
+      FROM available_dates 
+      ORDER BY date ASC`
     );
+    
+    console.log('🔍 Raw rows from MySQL:', rows);
     
     return res.json(rows);
   } catch (error) {
@@ -2269,7 +2506,8 @@ app.get('/api/admin/appointments', authenticateToken, isAdmin, async (req, res) 
     const [rows] = await pool.execute(`
       SELECT 
         a.id, a.user_id, a.service, a.appointment_date, a.appointment_time, a.status,
-        a.location, a.price, a.notes, a.room_type, a.property_type, a.quantity, a.service_category,
+        a.location, a.price, a.notes, a.room_type, a.room_type_slug, a.property_type, a.property_type_slug, 
+        a.quantity, a.service_category, a.service_category_slug, a.extra_price, a.cod_fee, a.payment_method,
         a.created_at, a.updated_at,
         u.fullName as customer_name, u.phone as customer_phone 
       FROM appointments a 
@@ -3612,7 +3850,8 @@ app.get('/api/service-pricing-filtered/:serviceSlug', async (req, res) => {
         rt.name as room_type_name,
         rt.slug as room_type_slug,
         rt.image_url as room_image,
-        rt.description as room_description
+        rt.description as room_description,
+        rt.whats_included as whats_included
       FROM service_pricing sp
       LEFT JOIN service_categories sc ON sp.service_category_id = sc.id
       LEFT JOIN property_types pt ON sp.property_type_id = pt.id
@@ -3701,12 +3940,12 @@ app.get('/api/admin/service-items', async (req, res) => {
 
 app.post('/api/admin/service-items', async (req, res) => {
   try {
-    const { name, slug, category_id, description, image_url, sort_order, is_active } = req.body;
+    const { name, slug, category_id, description, image_url, rating_text, sort_order, is_active } = req.body;
     const query = `
-      INSERT INTO service_items (name, slug, category_id, description, image_url, sort_order, is_active)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO service_items (name, slug, category_id, description, image_url, rating_text, sort_order, is_active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `;
-    const [result] = await pool.execute(query, [name, slug, category_id, description, image_url, sort_order || 0, is_active]);
+    const [result] = await pool.execute(query, [name, slug, category_id, description, image_url, rating_text, sort_order || 0, is_active]);
     res.json({ id: result.insertId, message: 'Service item created successfully' });
   } catch (error) {
     console.error('Error creating service item:', error);
@@ -3717,13 +3956,13 @@ app.post('/api/admin/service-items', async (req, res) => {
 app.put('/api/admin/service-items/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, slug, category_id, description, image_url, sort_order, is_active } = req.body;
+    const { name, slug, category_id, description, image_url, rating_text, sort_order, is_active } = req.body;
     const query = `
       UPDATE service_items 
-      SET name = ?, slug = ?, category_id = ?, description = ?, image_url = ?, sort_order = ?, is_active = ?
+      SET name = ?, slug = ?, category_id = ?, description = ?, image_url = ?, rating_text = ?, sort_order = ?, is_active = ?
       WHERE id = ?
     `;
-    await pool.execute(query, [name, slug, category_id, description, image_url, sort_order, is_active, id]);
+    await pool.execute(query, [name, slug, category_id, description, image_url, rating_text, sort_order, is_active, id]);
     res.json({ message: 'Service item updated successfully' });
   } catch (error) {
     console.error('Error updating service item:', error);
@@ -4018,7 +4257,8 @@ app.get('/api/service-pricing', async (req, res) => {
         rt.name as room_type_name,
         rt.slug as room_type_slug,
         rt.image_url as room_image,
-        rt.description as room_description
+        rt.description as room_description,
+        rt.whats_included as whats_included
       FROM service_pricing sp
       JOIN service_categories sc ON sp.service_category_id = sc.id
       JOIN property_types pt ON sp.property_type_id = pt.id
@@ -4958,7 +5198,7 @@ app.delete('/api/admin/terms/:id', authenticateToken, isAdmin, async (req, res) 
 // Create new room type (admin)
 app.post('/api/admin/room-types', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const { property_type_id, name, slug, image_url, description, is_active, sort_order } = req.body;
+    const { property_type_id, name, slug, image_url, description, whats_included, is_active, sort_order } = req.body;
     
     if (!property_type_id || !name || !slug) {
       return res.status(400).json({ message: 'Property type ID, name and slug are required' });
@@ -4977,8 +5217,8 @@ app.post('/api/admin/room-types', authenticateToken, isAdmin, async (req, res) =
     }
     
     const [result] = await pool.execute(
-      'INSERT INTO room_types (property_type_id, name, slug, image_url, description, is_active, sort_order, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [property_type_id, name, slug, image_url || null, description || null, is_active !== false, sort_order || 0, req.user.id]
+      'INSERT INTO room_types (property_type_id, name, slug, image_url, description, whats_included, is_active, sort_order, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [property_type_id, name, slug, image_url || null, description || null, JSON.stringify(whats_included || []), is_active !== false, sort_order || 0, req.user.id]
     );
     
     return res.status(201).json({ 
@@ -4995,7 +5235,7 @@ app.post('/api/admin/room-types', authenticateToken, isAdmin, async (req, res) =
 app.put('/api/admin/room-types/:id', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, slug, image_url, description, is_active, sort_order } = req.body;
+    const { name, slug, image_url, description, whats_included, is_active, sort_order } = req.body;
     
     // Check if room type exists
     const [existing] = await pool.execute('SELECT property_type_id FROM room_types WHERE id = ?', [id]);
@@ -5014,8 +5254,8 @@ app.put('/api/admin/room-types/:id', authenticateToken, isAdmin, async (req, res
     }
     
     await pool.execute(
-      'UPDATE room_types SET name = ?, slug = ?, image_url = ?, description = ?, is_active = ?, sort_order = ? WHERE id = ?',
-      [name, slug, image_url || null, description || null, is_active !== false, sort_order || 0, id]
+      'UPDATE room_types SET name = ?, slug = ?, image_url = ?, description = ?, whats_included = ?, is_active = ?, sort_order = ? WHERE id = ?',
+      [name, slug, image_url || null, description || null, JSON.stringify(whats_included || []), is_active !== false, sort_order || 0, id]
     );
     
     return res.json({ message: 'Room type updated successfully' });
@@ -5056,7 +5296,7 @@ app.get('/api/admin/service-pricing', authenticateToken, isAdmin, async (req, re
 // Create or update service pricing (admin)
 app.post('/api/admin/service-pricing', authenticateToken, isAdmin, async (req, res) => {
   try {
-    const { service_category_id, property_type_id, room_type_id, price, description, is_special, is_active } = req.body;
+    const { service_category_id, property_type_id, room_type_id, price, discount_price, max_orders, description, is_special, is_active } = req.body;
     
     if (!service_category_id || !property_type_id || !room_type_id || price === undefined) {
       return res.status(400).json({ message: 'Service category, property type, room type, and price are required' });
@@ -5071,16 +5311,16 @@ app.post('/api/admin/service-pricing', authenticateToken, isAdmin, async (req, r
     if (existing.length > 0) {
       // Update existing pricing
       await pool.execute(
-        'UPDATE service_pricing SET price = ?, description = ?, is_special = ?, is_active = ? WHERE id = ?',
-        [price, description || null, is_special || false, is_active !== false, existing[0].id]
+        'UPDATE service_pricing SET price = ?, discount_price = ?, max_orders = ?, description = ?, is_special = ?, is_active = ? WHERE id = ?',
+        [price, discount_price || null, max_orders || null, description || null, is_special || false, is_active !== false, existing[0].id]
       );
       
       return res.json({ message: 'Service pricing updated successfully' });
     } else {
       // Create new pricing
       const [result] = await pool.execute(
-        'INSERT INTO service_pricing (service_category_id, property_type_id, room_type_id, price, description, is_special, is_active, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [service_category_id, property_type_id, room_type_id, price, description || null, is_special || false, is_active !== false, req.user.id]
+        'INSERT INTO service_pricing (service_category_id, property_type_id, room_type_id, price, discount_price, max_orders, description, is_special, is_active, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [service_category_id, property_type_id, room_type_id, price, discount_price || null, max_orders || null, description || null, is_special || false, is_active !== false, req.user.id]
       );
       
       return res.status(201).json({ 
@@ -5098,7 +5338,7 @@ app.post('/api/admin/service-pricing', authenticateToken, isAdmin, async (req, r
 app.put('/api/admin/service-pricing/:id', authenticateToken, isAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { service_category_id, property_type_id, room_type_id, price, description, is_special, is_active } = req.body;
+    const { service_category_id, property_type_id, room_type_id, price, discount_price, max_orders, description, is_special, is_active } = req.body;
     
     if (!service_category_id || !property_type_id || !room_type_id || price === undefined) {
       return res.status(400).json({ message: 'Service category, property type, room type, and price are required' });
@@ -5117,8 +5357,8 @@ app.put('/api/admin/service-pricing/:id', authenticateToken, isAdmin, async (req
     );
     
     await pool.execute(
-      'UPDATE service_pricing SET service_category_id = ?, property_type_id = ?, room_type_id = ?, price = ?, description = ?, is_special = ?, is_active = ? WHERE id = ?',
-      [service_category_id, property_type_id, room_type_id, price, description || null, is_special || false, is_active !== false, id]
+      'UPDATE service_pricing SET service_category_id = ?, property_type_id = ?, room_type_id = ?, price = ?, discount_price = ?, max_orders = ?, description = ?, is_special = ?, is_active = ? WHERE id = ?',
+      [service_category_id, property_type_id, room_type_id, price, discount_price || null, max_orders || null, description || null, is_special || false, is_active !== false, id]
     );
     
     return res.json({ message: 'Service pricing updated successfully' });
@@ -5216,6 +5456,135 @@ async function isAdmin(req, res, next) {
     return res.status(500).json({ message: 'Server error' });
   }
 }
+
+// Website Settings API
+
+// Get website settings (public endpoint)
+app.get('/api/website-settings', async (req, res) => {
+  try {
+    if (!pool) {
+      return res.status(500).json({ message: 'Database not available' });
+    }
+    
+    const [rows] = await pool.execute(
+      'SELECT * FROM website_settings WHERE is_active = TRUE ORDER BY created_at DESC LIMIT 1'
+    );
+    
+    if (rows.length === 0) {
+      // Return default settings if none found
+      return res.json({
+        site_name: 'JL Services',
+        logo_url: '/jl-logo.svg',
+        tagline: 'Your trusted home services partner',
+        primary_color: '#FFD03E',
+        facebook_url: '',
+        instagram_url: '',
+        twitter_url: '',
+        linkedin_url: '',
+        google_url: '',
+        whatsapp_url: ''
+      });
+    }
+    
+    return res.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching website settings:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get website settings for admin (requires super admin role)
+app.get('/api/admin/website-settings', authenticateToken, isSuperAdmin, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT * FROM website_settings ORDER BY created_at DESC LIMIT 1'
+    );
+    
+    if (rows.length === 0) {
+      // Return default settings if none found
+      return res.json({
+        site_name: 'JL Services',
+        logo_url: '/jl-logo.svg',
+        tagline: 'Your trusted home services partner',
+        primary_color: '#FFD03E',
+        facebook_url: '',
+        instagram_url: '',
+        twitter_url: '',
+        linkedin_url: '',
+        google_url: '',
+        whatsapp_url: ''
+      });
+    }
+    
+    return res.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching website settings:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Update website settings (requires super admin role)
+app.put('/api/admin/website-settings', authenticateToken, isSuperAdmin, async (req, res) => {
+  try {
+    const {
+      site_name,
+      logo_url,
+      tagline,
+      primary_color,
+      facebook_url,
+      instagram_url,
+      twitter_url,
+      linkedin_url,
+      google_url,
+      whatsapp_url,
+      contact_address,
+      contact_phone,
+      contact_email
+    } = req.body;
+    
+    // Validate required fields
+    if (!site_name || !tagline || !primary_color) {
+      return res.status(400).json({ message: 'Site name, tagline, and primary color are required' });
+    }
+    
+    // Check if settings already exist
+    const [existing] = await pool.execute('SELECT id FROM website_settings WHERE is_active = TRUE LIMIT 1');
+    
+    if (existing.length > 0) {
+      // Update existing settings
+      await pool.execute(
+        `UPDATE website_settings SET 
+         site_name = ?, logo_url = ?, tagline = ?, primary_color = ?,
+         facebook_url = ?, instagram_url = ?, twitter_url = ?, linkedin_url = ?,
+         google_url = ?, whatsapp_url = ?, contact_address = ?, contact_phone = ?, contact_email = ?, updated_at = NOW()
+         WHERE id = ?`,
+        [
+          site_name, logo_url || '/jl-logo.svg', tagline, primary_color,
+          facebook_url || '', instagram_url || '', twitter_url || '', linkedin_url || '',
+          google_url || '', whatsapp_url || '', contact_address || '', contact_phone || '', contact_email || '', existing[0].id
+        ]
+      );
+    } else {
+      // Create new settings
+      await pool.execute(
+        `INSERT INTO website_settings 
+         (site_name, logo_url, tagline, primary_color, facebook_url, instagram_url, 
+          twitter_url, linkedin_url, google_url, whatsapp_url, contact_address, contact_phone, contact_email, created_by) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          site_name, logo_url || '/jl-logo.svg', tagline, primary_color,
+          facebook_url || '', instagram_url || '', twitter_url || '', linkedin_url || '',
+          google_url || '', whatsapp_url || '', contact_address || '', contact_phone || '', contact_email || '', req.user.id
+        ]
+      );
+    }
+    
+    return res.json({ message: 'Website settings updated successfully' });
+  } catch (error) {
+    console.error('Error updating website settings:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
 
 // Initialize the database and start the server
 async function startServer() {
