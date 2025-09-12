@@ -61,6 +61,97 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+// Health check endpoint for production debugging
+app.get('/api/health', async (req, res) => {
+  try {
+    const healthData = {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development',
+      database: 'unknown',
+      version: '1.0.0'
+    };
+
+    // Test database connection
+    if (pool) {
+      try {
+        const [testResult] = await pool.execute('SELECT 1 as test');
+        if (testResult && testResult.length > 0) {
+          healthData.database = 'connected';
+        } else {
+          healthData.database = 'connection_failed';
+        }
+      } catch (dbError) {
+        healthData.database = `error: ${dbError.message}`;
+      }
+    } else {
+      healthData.database = 'pool_not_initialized';
+    }
+
+    res.json(healthData);
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      error: error.message
+    });
+  }
+});
+
+// Test authentication endpoint
+app.get('/api/test-auth', authenticateToken, async (req, res) => {
+  try {
+    res.json({
+      status: 'authenticated',
+      user_id: req.user.id,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      error: error.message
+    });
+  }
+});
+
+// Debug endpoint to check database configuration
+app.get('/api/debug/db-config', authenticateToken, async (req, res) => {
+  try {
+    if (!pool) {
+      return res.status(500).json({ error: 'Database pool not available' });
+    }
+
+    // Check SQL mode and basic config
+    const [sqlMode] = await pool.execute('SELECT @@sql_mode as sql_mode');
+    const [timeZone] = await pool.execute('SELECT @@time_zone as time_zone');
+    const [version] = await pool.execute('SELECT VERSION() as version');
+    
+    // Check if Ziina API key exists
+    const [ziinaConfig] = await pool.execute(
+      'SELECT COUNT(*) as count FROM api_configurations WHERE service_name = "ziina" AND status = "active"'
+    );
+
+    res.json({
+      sql_mode: sqlMode[0]?.sql_mode,
+      time_zone: timeZone[0]?.time_zone,
+      mysql_version: version[0]?.version,
+      ziina_api_configured: ziinaConfig[0]?.count > 0,
+      timestamp: new Date().toISOString(),
+      environment: {
+        NODE_ENV: process.env.NODE_ENV,
+        DB_HOST: process.env.DB_HOST ? 'configured' : 'missing',
+        DB_NAME: process.env.DB_NAME || 'default',
+        JWT_SECRET: process.env.JWT_SECRET ? 'configured' : 'missing'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
 // Test CORS endpoint
 app.get('/api/test-cors', (req, res) => {
   res.json({ 
@@ -1995,8 +2086,62 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
       appointment_id: result.insertId
     });
   } catch (error) {
-    console.error('Error creating appointment:', error);
-    return res.status(500).json({ message: 'Server error' });
+    console.error('Backend - Error creating appointment:', {
+      message: error.message,
+      code: error.code,
+      errno: error.errno,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage,
+      sql: error.sql
+    });
+    
+    // Handle specific database errors
+    if (error.code === 'ER_TRUNCATED_WRONG_VALUE') {
+      return res.status(400).json({ 
+        message: 'Invalid time format provided. Please select a valid time slot.',
+        error_code: 'INVALID_TIME_FORMAT',
+        details: error.sqlMessage
+      });
+    }
+    
+    if (error.code === 'ER_DATA_TOO_LONG') {
+      return res.status(400).json({ 
+        message: 'One of the provided values is too long for the database field.',
+        error_code: 'DATA_TOO_LONG',
+        details: error.sqlMessage
+      });
+    }
+    
+    if (error.code === 'ER_BAD_NULL_ERROR') {
+      return res.status(400).json({ 
+        message: 'A required field is missing or null.',
+        error_code: 'MISSING_REQUIRED_FIELD',
+        details: error.sqlMessage
+      });
+    }
+    
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ 
+        message: 'This appointment conflicts with an existing booking.',
+        error_code: 'DUPLICATE_APPOINTMENT',
+        details: error.sqlMessage
+      });
+    }
+    
+    // Authentication/Authorization errors
+    if (error.message && error.message.includes('authentication')) {
+      return res.status(401).json({ 
+        message: 'Authentication failed. Please log in again.',
+        error_code: 'AUTH_FAILED'
+      });
+    }
+    
+    // Default server error with more context
+    return res.status(500).json({ 
+      message: 'Server error during appointment creation',
+      error_code: 'SERVER_ERROR',
+      details: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
   }
 });
 
@@ -5625,14 +5770,40 @@ function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   
+  // Enhanced logging for debugging
+  console.log('Backend - Authentication attempt:', {
+    method: req.method,
+    url: req.url,
+    authHeader: authHeader ? `Bearer ${authHeader.split(' ')[1]?.substring(0, 20)}...` : 'Not provided',
+    hasToken: !!token,
+    userAgent: req.headers['user-agent']?.substring(0, 100),
+    origin: req.headers.origin
+  });
+  
   if (!token) {
-    return res.status(401).json({ message: 'Authentication required' });
+    console.log('Backend - Authentication failed: No token provided');
+    return res.status(401).json({ 
+      message: 'Authentication required',
+      error_code: 'NO_TOKEN'
+    });
   }
   
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
-      return res.status(403).json({ message: 'Invalid or expired token' });
+      console.log('Backend - Authentication failed: Invalid token:', {
+        error: err.message,
+        tokenStart: token.substring(0, 20) + '...'
+      });
+      return res.status(403).json({ 
+        message: 'Invalid or expired token',
+        error_code: 'INVALID_TOKEN'
+      });
     }
+    
+    console.log('Backend - Authentication successful:', {
+      userId: user.id,
+      tokenValid: true
+    });
     
     req.user = user;
     next();
