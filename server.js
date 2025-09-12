@@ -1654,9 +1654,28 @@ app.post('/api/payments/ziina/create', authenticateToken, async (req, res) => {
   try {
     const { amount, currency, description, order_id, customer_email, customer_phone, return_url, cancel_url } = req.body;
     
+    console.log('Backend - Ziina payment creation request:', {
+      amount,
+      currency,
+      description,
+      order_id,
+      customer_email,
+      customer_phone,
+      return_url,
+      cancel_url,
+      user_id: req.user.id
+    });
+    
     // Validate input
     if (!amount || !currency || !description || !order_id) {
+      console.error('Backend - Missing required payment fields:', { amount, currency, description, order_id });
       return res.status(400).json({ message: 'Missing required payment fields' });
+    }
+
+    // Check if pool is available
+    if (!pool) {
+      console.error('Backend - Database pool not available');
+      return res.status(500).json({ message: 'Database not available' });
     }
 
     // Get Ziina API key from database configuration
@@ -1666,6 +1685,7 @@ app.post('/api/payments/ziina/create', authenticateToken, async (req, res) => {
     );
     
     if (ziinaConfigs.length === 0) {
+      console.error('Backend - Ziina API key not configured in database');
       return res.status(500).json({ message: 'Ziina API key not configured in database' });
     }
     
@@ -1673,6 +1693,16 @@ app.post('/api/payments/ziina/create', authenticateToken, async (req, res) => {
     console.log('Backend - Ziina API key from database:', ziinaApiKey ? 'Configured' : 'Not configured');
 
     // Create payment with Ziina API
+    console.log('Backend - Making Ziina API request...');
+    const ziinaPayload = {
+      amount: amount * 100, // Convert to fils (100 AED = 10000 fils)
+      currency_code: currency,
+      success_url: return_url,
+      cancel_url: cancel_url,
+      test: true // Test mode for development
+    };
+    console.log('Backend - Ziina API payload:', ziinaPayload);
+    
     const ziinaResponse = await fetch('https://api-v2.ziina.com/api/payment_intent', {
       method: 'POST',
       headers: {
@@ -1680,22 +1710,23 @@ app.post('/api/payments/ziina/create', authenticateToken, async (req, res) => {
         'Authorization': `Bearer ${ziinaApiKey}`,
         'Accept': 'application/json'
       },
-      body: JSON.stringify({
-        amount: amount * 100, // Convert to fils (100 AED = 10000 fils)
-        currency_code: currency,
-        success_url: return_url,
-        cancel_url: cancel_url,
-        test: true // Test mode for development
-      })
+      body: JSON.stringify(ziinaPayload)
     });
 
     const ziinaData = await ziinaResponse.json();
+    console.log('Backend - Ziina API response status:', ziinaResponse.status);
+    console.log('Backend - Ziina API response:', ziinaData);
 
     if (!ziinaResponse.ok) {
-      console.error('Ziina API error:', ziinaData);
+      console.error('Backend - Ziina API error:', {
+        status: ziinaResponse.status,
+        statusText: ziinaResponse.statusText,
+        data: ziinaData
+      });
       return res.status(400).json({ 
         success: false,
-        message: ziinaData.message || 'Failed to create payment with Ziina'
+        message: ziinaData.message || 'Failed to create payment with Ziina',
+        error: ziinaData
       });
     }
 
@@ -1716,10 +1747,15 @@ app.post('/api/payments/ziina/create', authenticateToken, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error creating Ziina payment:', error);
+    console.error('Backend - Error creating Ziina payment:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
     res.status(500).json({ 
       success: false,
-      message: 'Internal server error'
+      message: 'Internal server error during payment creation',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 });
@@ -1814,6 +1850,12 @@ app.post('/api/payments/ziina/webhook', async (req, res) => {
 // Create a new appointment
 app.post('/api/user/appointments', authenticateToken, async (req, res) => {
   try {
+    // Check if pool is available
+    if (!pool) {
+      console.error('Backend - Database pool not available for appointment creation');
+      return res.status(500).json({ message: 'Database not available' });
+    }
+    
     const { 
       service, 
       appointment_date, 
@@ -1854,6 +1896,42 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
       user_id: req.user.id
     });
     console.log('Backend - Type of appointment_date:', typeof appointment_date);
+    console.log('Backend - Raw appointment_time received:', appointment_time);
+    
+    // Helper function to extract and convert time
+    const extractStartTime = (timeInput) => {
+      if (!timeInput) return timeInput;
+      
+      // If it's already in correct format (like "14:00:00"), return as is
+      if (timeInput.match(/^\d{2}:\d{2}(:\d{2})?$/)) {
+        return timeInput;
+      }
+      
+      // Extract start time from range like "2:00 PM - 2:30 PM"
+      const startTimeStr = timeInput.split(' - ')[0];
+      
+      // Convert 12-hour format to 24-hour format for database
+      const convertTo24Hour = (time12h) => {
+        const [time, modifier] = time12h.trim().split(' ');
+        let [hours, minutes] = time.split(':');
+        
+        if (hours === '12') {
+          hours = '00';
+        }
+        
+        if (modifier === 'PM') {
+          hours = parseInt(hours, 10) + 12;
+        }
+        
+        return `${hours.toString().padStart(2, '0')}:${minutes}:00`;
+      };
+      
+      return convertTo24Hour(startTimeStr);
+    };
+    
+    // Convert appointment_time to proper format
+    const formattedTime = extractStartTime(appointment_time);
+    console.log('Backend - Converted appointment_time:', formattedTime);
     
     // Validate input
     if (!service || !appointment_date || !appointment_time || !location || !price) {
@@ -1889,7 +1967,7 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
         req.user.id, 
         service, 
         formattedDate, // Use the formatted date instead of raw appointment_date
-        appointment_time, 
+        formattedTime, // Use the formatted time instead of raw appointment_time
         locationJSON, 
         price, 
         notes || null,
