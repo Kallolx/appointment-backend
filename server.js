@@ -6,6 +6,12 @@ const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 const { sendOTP, verifyOTP } = require('./services/otpService');
 const { getApiConfig, clearApiConfigCache, sendDynamicOTP } = require('./services/dynamicApiService');
+const { 
+  sendAppointmentConfirmation, 
+  sendAppointmentReminder, 
+  sendAdminNotification, 
+  sendEmail 
+} = require('./services/emailService');
 
 // Load environment variables
 dotenv.config();
@@ -160,6 +166,104 @@ app.get('/api/test-cors', (req, res) => {
     timestamp: new Date().toISOString(),
     headers: req.headers
   });
+});
+
+// Email Service Routes
+// Send test email
+app.post('/api/email/send-test', async (req, res) => {
+  try {
+    const { to, subject, message } = req.body;
+    
+    if (!to || !subject || !message) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: to, subject, message'
+      });
+    }
+
+    const htmlContent = `
+      <div style="font-family: Arial, sans-serif; padding: 20px;">
+        <h2>Test Email from AppointPro Dubai</h2>
+        <p>${message}</p>
+        <hr>
+        <p style="color: #666; font-size: 12px;">
+          This is a test email sent from the AppointPro Dubai system.
+        </p>
+      </div>
+    `;
+
+    const result = await sendEmail(to, subject, htmlContent);
+    res.json(result);
+  } catch (error) {
+    console.error('Error sending test email:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send test email',
+      error: error.message
+    });
+  }
+});
+
+// Send appointment confirmation email
+app.post('/api/email/appointment-confirmation', async (req, res) => {
+  try {
+    const appointmentData = req.body;
+    
+    // Validate required fields
+    const requiredFields = ['customer_email', 'customer_name', 'service_name', 'appointment_date', 'appointment_time'];
+    for (const field of requiredFields) {
+      if (!appointmentData[field]) {
+        return res.status(400).json({
+          success: false,
+          message: `Missing required field: ${field}`
+        });
+      }
+    }
+
+    const result = await sendAppointmentConfirmation(appointmentData);
+    res.json(result);
+  } catch (error) {
+    console.error('Error sending appointment confirmation email:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send appointment confirmation email',
+      error: error.message
+    });
+  }
+});
+
+// Send admin notification email
+app.post('/api/email/admin-notification', async (req, res) => {
+  try {
+    const appointmentData = req.body;
+    
+    const result = await sendAdminNotification(appointmentData);
+    res.json(result);
+  } catch (error) {
+    console.error('Error sending admin notification email:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send admin notification email',
+      error: error.message
+    });
+  }
+});
+
+// Send appointment reminder email
+app.post('/api/email/appointment-reminder', async (req, res) => {
+  try {
+    const appointmentData = req.body;
+    
+    const result = await sendAppointmentReminder(appointmentData);
+    res.json(result);
+  } catch (error) {
+    console.error('Error sending appointment reminder email:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send appointment reminder email',
+      error: error.message
+    });
+  }
 });
 
 // Create a connection pool without specifying a database initially
@@ -2080,6 +2184,79 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
       insertId: result.insertId,
       affectedRows: result.affectedRows
     });
+
+    // Send email notifications after successful appointment creation
+    try {
+      // Get user details for email
+      const [userResult] = await pool.execute(
+        'SELECT fullName, email, phone FROM users WHERE id = ?',
+        [req.user.id]
+      );
+      
+      if (userResult.length > 0) {
+        const user = userResult[0];
+        
+        // Format address properly for email
+        let formattedAddress = location;
+        if (typeof location === 'object' && location !== null) {
+          // Extract meaningful address components
+          const addressParts = [];
+          
+          if (location.address_line1) {
+            addressParts.push(location.address_line1);
+          }
+          
+          if (location.address_line2 && location.address_line2 !== "0" && location.address_line2.trim() !== "") {
+            addressParts.push(`Apt/Unit: ${location.address_line2}`);
+          }
+          
+          if (location.city) {
+            addressParts.push(location.city);
+          }
+          
+          if (location.state) {
+            addressParts.push(location.state);
+          }
+          
+          if (location.country) {
+            addressParts.push(location.country);
+          }
+          
+          formattedAddress = addressParts.join(', ');
+        }
+
+        // Prepare email data
+        const emailData = {
+          appointment_id: result.insertId,
+          customer_name: user.fullName,
+          customer_email: user.email,
+          customer_phone: user.phone,
+          service_name: service,
+          appointment_date: appointment_date,
+          appointment_time: appointment_time,
+          address: formattedAddress,
+          total_amount: (parseFloat(price) + parseFloat(extra_price || 0) + parseFloat(cod_fee || 0)) * 1.05, // Including 5% VAT
+          payment_method: payment_method,
+          notes: notes || '',
+          room_type: room_type,
+          property_type: property_type,
+          quantity: quantity || 1
+        };
+
+        // Send confirmation email to customer
+        console.log('Backend - Sending appointment confirmation email...');
+        const confirmationResult = await sendAppointmentConfirmation(emailData);
+        console.log('Backend - Confirmation email result:', confirmationResult);
+
+        // Send notification email to admin
+        console.log('Backend - Sending admin notification email...');
+        const adminResult = await sendAdminNotification(emailData);
+        console.log('Backend - Admin notification email result:', adminResult);
+      }
+    } catch (emailError) {
+      // Don't fail the appointment creation if email fails
+      console.error('Backend - Error sending emails (appointment still created):', emailError);
+    }
     
     return res.status(201).json({ 
       message: 'Appointment created successfully',
@@ -3572,6 +3749,39 @@ app.post('/api/superadmin/api-configs', authenticateToken, isSuperAdmin, async (
   } catch (error) {
     console.error('Error saving API configuration:', error);
     return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Test API Configuration endpoints
+app.post('/api/superadmin/api-configs/:service/test', authenticateToken, isSuperAdmin, async (req, res) => {
+  try {
+    const serviceName = req.params.service;
+    
+    if (serviceName === 'google_maps') {
+      // Test Google Maps API (basic validation)
+      const [configs] = await pool.execute(
+        'SELECT api_key FROM api_configurations WHERE service_name = ? AND status = "active"',
+        [serviceName]
+      );
+      
+      if (configs.length === 0) {
+        return res.json({ success: false, message: 'Google Maps API key not configured' });
+      }
+      
+      // Update last_tested timestamp
+      await pool.execute(
+        'UPDATE api_configurations SET last_tested = NOW() WHERE service_name = ?',
+        [serviceName]
+      );
+      
+      return res.json({ success: true, message: 'Google Maps API key is configured' });
+    } else {
+      return res.status(400).json({ success: false, message: 'Service test not implemented' });
+    }
+    
+  } catch (error) {
+    console.error('Error testing API configuration:', error);
+    return res.status(500).json({ success: false, message: 'Server error during API test' });
   }
 });
 
