@@ -29,7 +29,9 @@ const corsOptions = {
     const allowedOrigins = [
       'http://localhost:8080', 
       'http://localhost:3000', 
-      'https://appoinments.gsmarena1.com', 
+      'https://appoinments.gsmarena1.com',
+      'https://appointment-dubai.vercel.app',
+      'https://appointpro-dubai.com',
       'https://31.97.206.5:2025',
     ];
     
@@ -483,6 +485,52 @@ async function initializeDatabase() {
         last_tested TIMESTAMP NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Create offer_codes table for discount/coupon management
+    await dbConnection.query(`
+      CREATE TABLE IF NOT EXISTS offer_codes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        code VARCHAR(20) NOT NULL UNIQUE,
+        name VARCHAR(100) NOT NULL,
+        description TEXT,
+        discount_type ENUM('percentage', 'fixed') NOT NULL DEFAULT 'percentage',
+        discount_value DECIMAL(10, 2) NOT NULL,
+        minimum_order_amount DECIMAL(10, 2) DEFAULT 0.00,
+        maximum_discount_amount DECIMAL(10, 2) NULL,
+        usage_limit INT DEFAULT NULL COMMENT 'NULL means unlimited usage',
+        used_count INT DEFAULT 0,
+        start_date DATETIME NOT NULL,
+        end_date DATETIME NOT NULL,
+        is_active BOOLEAN DEFAULT TRUE,
+        applicable_services JSON DEFAULT NULL COMMENT 'Array of service IDs, NULL means all services',
+        created_by INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
+        INDEX idx_code (code),
+        INDEX idx_active_dates (is_active, start_date, end_date),
+        INDEX idx_created_by (created_by)
+      )
+    `);
+
+    // Create offer_code_usage table to track individual usage
+    await dbConnection.query(`
+      CREATE TABLE IF NOT EXISTS offer_code_usage (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        offer_code_id INT NOT NULL,
+        user_id INT NOT NULL,
+        appointment_id INT NULL,
+        order_amount DECIMAL(10, 2) NOT NULL,
+        discount_amount DECIMAL(10, 2) NOT NULL,
+        used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (offer_code_id) REFERENCES offer_codes(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (appointment_id) REFERENCES appointments(id) ON DELETE SET NULL,
+        INDEX idx_offer_user (offer_code_id, user_id),
+        INDEX idx_appointment (appointment_id),
+        INDEX idx_used_at (used_at)
       )
     `);
 
@@ -3143,7 +3191,7 @@ app.post('/api/admin/appointments/:id/share', authenticateToken, isAdmin, async 
     );
     
     // Generate frontend URL instead of backend URL
-    const frontendHost = process.env.FRONTEND_URL || 'http://localhost:8080';
+    const frontendHost = 'https://appoinments.gsmarena1.com';
     const shareUrl = `${frontendHost}/shared-appointment/${shareToken}`;
     
     res.json({
@@ -4434,6 +4482,348 @@ app.put('/api/admin/profile/password', authenticateToken, isAdmin, async (req, r
   } catch (error) {
     console.error('Error changing admin password:', error);
     return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ===== OFFER CODES / COUPONS API ENDPOINTS =====
+
+// Public: Validate offer code
+app.post('/api/offer-codes/validate', async (req, res) => {
+  try {
+    const { code, orderAmount, serviceIds } = req.body;
+    
+    if (!code || !orderAmount) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Offer code and order amount are required' 
+      });
+    }
+    
+    // Get offer code details
+    const [offerRows] = await pool.execute(`
+      SELECT * FROM offer_codes 
+      WHERE code = ? AND is_active = TRUE 
+      AND start_date <= NOW() AND end_date >= NOW()
+    `, [code.toUpperCase()]);
+    
+    if (offerRows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Invalid or expired offer code' 
+      });
+    }
+    
+    const offer = offerRows[0];
+    
+    // Check usage limit
+    if (offer.usage_limit !== null && offer.used_count >= offer.usage_limit) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'This offer code has reached its usage limit' 
+      });
+    }
+    
+    // Check minimum order amount
+    if (orderAmount < offer.minimum_order_amount) {
+      return res.status(400).json({ 
+        success: false,
+        message: `Minimum order amount of AED ${offer.minimum_order_amount} required for this offer` 
+      });
+    }
+    
+    // Check applicable services
+    if (offer.applicable_services && serviceIds) {
+      const applicableServices = JSON.parse(offer.applicable_services);
+      const hasApplicableService = serviceIds.some(id => applicableServices.includes(id));
+      
+      if (!hasApplicableService) {
+        return res.status(400).json({ 
+          success: false,
+          message: 'This offer code is not applicable to selected services' 
+        });
+      }
+    }
+    
+    // Calculate discount amount
+    let discountAmount = 0;
+    if (offer.discount_type === 'percentage') {
+      discountAmount = (orderAmount * offer.discount_value) / 100;
+      
+      // Apply maximum discount limit if set
+      if (offer.maximum_discount_amount && discountAmount > offer.maximum_discount_amount) {
+        discountAmount = offer.maximum_discount_amount;
+      }
+    } else {
+      discountAmount = Math.min(offer.discount_value, orderAmount);
+    }
+    
+    const finalAmount = Math.max(0, orderAmount - discountAmount);
+    
+    res.json({
+      success: true,
+      offer: {
+        id: offer.id,
+        code: offer.code,
+        name: offer.name,
+        description: offer.description,
+        discount_type: offer.discount_type,
+        discount_value: offer.discount_value
+      },
+      orderAmount,
+      discountAmount: Math.round(discountAmount * 100) / 100,
+      finalAmount: Math.round(finalAmount * 100) / 100,
+      savings: Math.round(discountAmount * 100) / 100
+    });
+    
+  } catch (error) {
+    console.error('Error validating offer code:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error while validating offer code' 
+    });
+  }
+});
+
+// Public: Apply offer code (when booking is confirmed)
+app.post('/api/offer-codes/apply', authenticateToken, async (req, res) => {
+  try {
+    const { offerId, orderAmount, appointmentId } = req.body;
+    
+    if (!offerId || !orderAmount) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Offer ID and order amount are required' 
+      });
+    }
+    
+    // Get offer code details
+    const [offerRows] = await pool.execute(`
+      SELECT * FROM offer_codes 
+      WHERE id = ? AND is_active = TRUE 
+      AND start_date <= NOW() AND end_date >= NOW()
+    `, [offerId]);
+    
+    if (offerRows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Offer code not found or expired' 
+      });
+    }
+    
+    const offer = offerRows[0];
+    
+    // Calculate discount amount (same logic as validation)
+    let discountAmount = 0;
+    if (offer.discount_type === 'percentage') {
+      discountAmount = (orderAmount * offer.discount_value) / 100;
+      if (offer.maximum_discount_amount && discountAmount > offer.maximum_discount_amount) {
+        discountAmount = offer.maximum_discount_amount;
+      }
+    } else {
+      discountAmount = Math.min(offer.discount_value, orderAmount);
+    }
+    
+    // Record usage
+    await pool.execute(`
+      INSERT INTO offer_code_usage (offer_code_id, user_id, appointment_id, order_amount, discount_amount)
+      VALUES (?, ?, ?, ?, ?)
+    `, [offerId, req.user.id, appointmentId, orderAmount, discountAmount]);
+    
+    // Update usage count
+    await pool.execute(`
+      UPDATE offer_codes SET used_count = used_count + 1 WHERE id = ?
+    `, [offerId]);
+    
+    res.json({
+      success: true,
+      message: 'Offer code applied successfully',
+      discountAmount: Math.round(discountAmount * 100) / 100
+    });
+    
+  } catch (error) {
+    console.error('Error applying offer code:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error while applying offer code' 
+    });
+  }
+});
+
+// Admin: Get all offer codes
+app.get('/api/admin/offer-codes', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const [offers] = await pool.execute(`
+      SELECT oc.*, u.fullName as created_by_name
+      FROM offer_codes oc
+      LEFT JOIN users u ON oc.created_by = u.id
+      ORDER BY oc.created_at DESC
+    `);
+    
+    res.json({ success: true, offers });
+  } catch (error) {
+    console.error('Error fetching offer codes:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Admin: Create new offer code
+app.post('/api/admin/offer-codes', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const {
+      code,
+      name,
+      description,
+      discountType,
+      discountValue,
+      minimumOrderAmount,
+      maximumDiscountAmount,
+      usageLimit,
+      startDate,
+      endDate,
+      applicableServices
+    } = req.body;
+    
+    // Validate required fields
+    if (!code || !name || !discountType || !discountValue || !startDate || !endDate) {
+      return res.status(400).json({ 
+        message: 'Code, name, discount type, discount value, start date, and end date are required' 
+      });
+    }
+    
+    // Check if code already exists
+    const [existingCode] = await pool.execute('SELECT id FROM offer_codes WHERE code = ?', [code.toUpperCase()]);
+    if (existingCode.length > 0) {
+      return res.status(400).json({ message: 'Offer code already exists' });
+    }
+    
+    const [result] = await pool.execute(`
+      INSERT INTO offer_codes (
+        code, name, description, discount_type, discount_value,
+        minimum_order_amount, maximum_discount_amount, usage_limit,
+        start_date, end_date, applicable_services, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      code.toUpperCase(),
+      name,
+      description,
+      discountType,
+      discountValue,
+      minimumOrderAmount || 0,
+      maximumDiscountAmount,
+      usageLimit,
+      startDate,
+      endDate,
+      applicableServices ? JSON.stringify(applicableServices) : null,
+      req.user.id
+    ]);
+    
+    res.json({ 
+      success: true, 
+      message: 'Offer code created successfully',
+      offerId: result.insertId 
+    });
+    
+  } catch (error) {
+    console.error('Error creating offer code:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Admin: Update offer code
+app.put('/api/admin/offer-codes/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      name,
+      description,
+      discountType,
+      discountValue,
+      minimumOrderAmount,
+      maximumDiscountAmount,
+      usageLimit,
+      startDate,
+      endDate,
+      isActive,
+      applicableServices
+    } = req.body;
+    
+    const [result] = await pool.execute(`
+      UPDATE offer_codes SET
+        name = ?, description = ?, discount_type = ?, discount_value = ?,
+        minimum_order_amount = ?, maximum_discount_amount = ?, usage_limit = ?,
+        start_date = ?, end_date = ?, is_active = ?, applicable_services = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [
+      name,
+      description,
+      discountType,
+      discountValue,
+      minimumOrderAmount || 0,
+      maximumDiscountAmount,
+      usageLimit,
+      startDate,
+      endDate,
+      isActive,
+      applicableServices ? JSON.stringify(applicableServices) : null,
+      id
+    ]);
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Offer code not found' });
+    }
+    
+    res.json({ success: true, message: 'Offer code updated successfully' });
+    
+  } catch (error) {
+    console.error('Error updating offer code:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Admin: Delete offer code
+app.delete('/api/admin/offer-codes/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const [result] = await pool.execute('DELETE FROM offer_codes WHERE id = ?', [id]);
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Offer code not found' });
+    }
+    
+    res.json({ success: true, message: 'Offer code deleted successfully' });
+    
+  } catch (error) {
+    console.error('Error deleting offer code:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Admin: Get offer code usage statistics
+app.get('/api/admin/offer-codes/:id/usage', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const [usageData] = await pool.execute(`
+      SELECT 
+        ocu.*,
+        u.fullName as user_name,
+        u.phone as user_phone,
+        a.service as appointment_service,
+        a.appointment_date
+      FROM offer_code_usage ocu
+      LEFT JOIN users u ON ocu.user_id = u.id
+      LEFT JOIN appointments a ON ocu.appointment_id = a.id
+      WHERE ocu.offer_code_id = ?
+      ORDER BY ocu.used_at DESC
+    `, [id]);
+    
+    res.json({ success: true, usage: usageData });
+    
+  } catch (error) {
+    console.error('Error fetching offer code usage:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
