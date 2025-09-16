@@ -3100,6 +3100,113 @@ app.put('/api/admin/appointments/:id/status', authenticateToken, isAdmin, async 
   }
 });
 
+// Generate shareable link for appointment (admin only)
+app.post('/api/admin/appointments/:id/share', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if appointment exists
+    const [appointment] = await pool.execute(
+      'SELECT id FROM appointments WHERE id = ?',
+      [id]
+    );
+    
+    if (appointment.length === 0) {
+      return res.status(404).json({ message: 'Appointment not found' });
+    }
+    
+    // Generate a unique share token (combination of appointment ID and random string)
+    const crypto = require('crypto');
+    const shareToken = crypto.randomBytes(32).toString('hex');
+    
+    // Store the share token in database (you may want to create a shared_appointments table)
+    // For now, we'll use a simple approach with expiration
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 30); // 30 days expiration
+    
+    // Create shared_appointments table if it doesn't exist
+    await pool.execute(`
+      CREATE TABLE IF NOT EXISTS shared_appointments (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        appointment_id INT NOT NULL,
+        share_token VARCHAR(255) UNIQUE NOT NULL,
+        expires_at DATETIME NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (appointment_id) REFERENCES appointments(id) ON DELETE CASCADE
+      )
+    `);
+    
+    // Insert share record
+    await pool.execute(
+      'INSERT INTO shared_appointments (appointment_id, share_token, expires_at) VALUES (?, ?, ?)',
+      [id, shareToken, expiresAt]
+    );
+    
+    // Generate frontend URL instead of backend URL
+    const frontendHost = process.env.FRONTEND_URL || 'http://localhost:8080';
+    const shareUrl = `${frontendHost}/shared-appointment/${shareToken}`;
+    
+    res.json({
+      shareToken,
+      shareUrl,
+      expiresAt: expiresAt.toISOString()
+    });
+  } catch (error) {
+    console.error('Error generating share link:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get shared appointment details (public access, no auth required)
+app.get('/api/shared-appointment/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    
+    // Find the shared appointment
+    const [shared] = await pool.execute(`
+      SELECT sa.appointment_id, sa.expires_at 
+      FROM shared_appointments sa 
+      WHERE sa.share_token = ? AND sa.expires_at > NOW()
+    `, [token]);
+    
+    if (shared.length === 0) {
+      return res.status(404).json({ message: 'Shared appointment not found or expired' });
+    }
+    
+    const appointmentId = shared[0].appointment_id;
+    
+    // Get full appointment details with customer info
+    const [appointment] = await pool.execute(`
+      SELECT 
+        a.id, a.service, a.appointment_date, a.appointment_time, a.status,
+        a.location, a.price, a.notes, a.room_type, a.room_type_slug, 
+        a.property_type, a.property_type_slug, a.quantity, a.service_category, 
+        a.service_category_slug, a.extra_price, a.cod_fee, a.payment_method,
+        a.created_at,
+        u.fullName as customer_name, u.phone as customer_phone 
+      FROM appointments a 
+      LEFT JOIN users u ON a.user_id = u.id 
+      WHERE a.id = ?
+    `, [appointmentId]);
+    
+    if (appointment.length === 0) {
+      return res.status(404).json({ message: 'Appointment not found' });
+    }
+    
+    // Return appointment details (sensitive data excluded)
+    const appointmentData = {
+      ...appointment[0],
+      // Remove sensitive user data if needed
+      // For now keeping customer name and phone as they might be needed for service
+    };
+    
+    res.json(appointmentData);
+  } catch (error) {
+    console.error('Error fetching shared appointment:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Get all users/customers (admin only)
 app.get('/api/admin/users', authenticateToken, isAdmin, async (req, res) => {
   try {
