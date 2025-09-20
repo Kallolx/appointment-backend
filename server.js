@@ -1811,7 +1811,7 @@ app.get('/api/user/appointments', authenticateToken, async (req, res) => {
       `SELECT 
         id, user_id, service, appointment_date, appointment_time, status, 
         location, price, notes, room_type, room_type_slug, property_type, property_type_slug, 
-        quantity, service_category, service_category_slug, extra_price, cod_fee, payment_method,
+        quantity, service_category, service_category_slug, service_items_category, extra_price, cod_fee, payment_method,
         created_at, updated_at
        FROM appointments WHERE user_id = ? ORDER BY appointment_date DESC, appointment_time DESC`,
       [req.user.id]
@@ -1833,7 +1833,7 @@ app.get('/api/user/appointments/:id', authenticateToken, async (req, res) => {
       `SELECT 
         id, user_id, service, appointment_date, appointment_time, status, 
         location, price, notes, room_type, room_type_slug, property_type, property_type_slug, 
-        quantity, service_category, service_category_slug, extra_price, cod_fee, payment_method,
+        quantity, service_category, service_category_slug, service_items_category, extra_price, cod_fee, payment_method,
         created_at, updated_at
        FROM appointments WHERE id = ? AND user_id = ?`,
       [id, req.user.id]
@@ -2113,6 +2113,7 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
       quantity,
       service_category,
       service_category_slug,
+      service_items_category,
       extra_price,
       cod_fee,
       payment_method,
@@ -2132,6 +2133,7 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
       property_type_slug,
       service_category,
       service_category_slug,
+      service_items_category,
       extra_price,
       cod_fee,
       payment_method,
@@ -2199,13 +2201,13 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
     // Convert location object to JSON string
     const locationJSON = JSON.stringify(location);
     
-    // Insert new appointment with new fields including slugs
+    // Insert new appointment with new fields including service_items_category
     const [result] = await pool.execute(
       `INSERT INTO appointments 
        (user_id, service, appointment_date, appointment_time, location, price, notes, 
         room_type, room_type_slug, property_type, property_type_slug, quantity, 
-        service_category, service_category_slug, extra_price, cod_fee, payment_method, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        service_category, service_category_slug, service_items_category, extra_price, cod_fee, payment_method, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         req.user.id, 
         service, 
@@ -2221,6 +2223,7 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
         quantity || 1,
         service_category || null,
         service_category_slug || null,
+        service_items_category || null,
         extra_price || 0.00,
         cod_fee || 0.00,
         payment_method || null,
@@ -3109,7 +3112,7 @@ app.get('/api/admin/appointments', authenticateToken, isAdmin, async (req, res) 
       SELECT 
         a.id, a.user_id, a.service, a.appointment_date, a.appointment_time, a.status,
         a.location, a.price, a.notes, a.room_type, a.room_type_slug, a.property_type, a.property_type_slug, 
-        a.quantity, a.service_category, a.service_category_slug, a.extra_price, a.cod_fee, a.payment_method,
+        a.quantity, a.service_category, a.service_category_slug, a.service_items_category, a.extra_price, a.cod_fee, a.payment_method,
         a.created_at, a.updated_at,
         u.fullName as customer_name, u.phone as customer_phone 
       FROM appointments a 
