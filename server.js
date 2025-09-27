@@ -315,10 +315,11 @@ async function initializeDatabase() {
         id INT AUTO_INCREMENT PRIMARY KEY,
         phone VARCHAR(20) UNIQUE NOT NULL,
         fullName VARCHAR(100) NOT NULL,
-        email VARCHAR(100) UNIQUE NOT NULL,
-        address JSON NOT NULL,
-        password VARCHAR(255) NOT NULL,
+        email VARCHAR(100) UNIQUE NULL,
+        address JSON NULL,
+        password VARCHAR(255) NULL,
         role ENUM('user', 'manager', 'admin', 'super_admin') DEFAULT 'user',
+        registered_via_otp BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       )
@@ -1563,7 +1564,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
 // Verify OTP and login/register
 app.post('/api/auth/verify-otp', async (req, res) => {
   try {
-    const { phone, otp } = req.body;
+    const { phone, otp, fullName, email } = req.body;
     
     if (!phone || !otp) {
       return res.status(400).json({ message: 'Phone number and OTP are required' });
@@ -1599,13 +1600,57 @@ app.post('/api/auth/verify-otp', async (req, res) => {
         isNewUser: false
       });
     } else {
-      // User doesn't exist - return flag for registration
-      return res.json({
-        message: 'Phone verified, please complete registration',
-        phone,
-        isNewUser: true,
-        success: true
-      });
+      // User doesn't exist - create new user automatically
+      try {
+        // Generate a default name if not provided
+        const defaultName = fullName || `User ${phone.slice(-4)}`;
+        const defaultEmail = email || `${phone.replace(/[^0-9]/g, '')}@tempuser.com`;
+        
+        // Create placeholder password (users can set this later if needed)
+        const hashedPassword = await bcrypt.hash(phone + '_otp_login', 10);
+        
+        // Default address structure
+        const defaultAddress = JSON.stringify({
+          recipientName: defaultName,
+          buildingInfo: '',
+          streetInfo: '',
+          locality: '',
+          city: '',
+          state: '',
+          country: '',
+          postalCode: ''
+        });
+        
+        // Insert new user
+        const [result] = await pool.execute(
+          'INSERT INTO users (phone, fullName, email, address, password, registered_via_otp) VALUES (?, ?, ?, ?, ?, ?)',
+          [phone, defaultName, defaultEmail, defaultAddress, hashedPassword, true]
+        );
+        
+        // Generate JWT token for new user
+        const newUser = {
+          id: result.insertId,
+          phone,
+          fullName: defaultName,
+          email: defaultEmail,
+          role: 'user'
+        };
+        
+        const token = jwt.sign({ id: newUser.id }, JWT_SECRET, { expiresIn: '7d' });
+        
+        return res.json({
+          message: 'Account created and login successful',
+          token,
+          user: newUser,
+          isNewUser: true
+        });
+      } catch (createError) {
+        console.error('Error creating user:', createError);
+        if (createError.code === 'ER_DUP_ENTRY') {
+          return res.status(400).json({ message: 'Phone number already registered' });
+        }
+        return res.status(500).json({ message: 'Failed to create user account' });
+      }
     }
   } catch (error) {
     console.error('Error verifying OTP:', error);
@@ -1613,7 +1658,7 @@ app.post('/api/auth/verify-otp', async (req, res) => {
   }
 });
 
-// Check if phone number exists
+// Check if phone number exists (deprecated - kept for backward compatibility)
 app.post('/api/auth/check-phone', async (req, res) => {
   try {
     const { phone } = req.body;
@@ -1624,7 +1669,8 @@ app.post('/api/auth/check-phone', async (req, res) => {
     
     const [rows] = await pool.execute('SELECT id FROM users WHERE phone = ?', [phone]);
     
-    return res.json({ exists: rows.length > 0 });
+    // Always return false to force OTP flow for all users
+    return res.json({ exists: false, useOtpFlow: true });
   } catch (error) {
     console.error('Error checking phone:', error);
     return res.status(500).json({ message: 'Server error' });
@@ -2373,11 +2419,19 @@ app.post('/api/user/appointments', authenticateToken, async (req, res) => {
   }
 });
 
-// Update appointment status (cancel, reschedule)
+// Update appointment (status, date/time, location, payment method)
 app.put('/api/user/appointments/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, appointment_date, appointment_time } = req.body;
+    const { 
+      status, 
+      appointment_date, 
+      appointment_time, 
+      location, 
+      payment_method, 
+      price, 
+      notes 
+    } = req.body;
     
     // Verify the appointment belongs to the user
     const [appointmentCheck] = await pool.execute(
@@ -2407,6 +2461,31 @@ app.put('/api/user/appointments/:id', authenticateToken, async (req, res) => {
       updateQuery += 'appointment_time = ?, ';
       updateValues.push(appointment_time);
     }
+    
+    if (location) {
+      // Convert location object to JSON string if it's an object
+      const locationJSON = typeof location === 'object' ? JSON.stringify(location) : location;
+      updateQuery += 'location = ?, ';
+      updateValues.push(locationJSON);
+    }
+    
+    if (payment_method) {
+      updateQuery += 'payment_method = ?, ';
+      updateValues.push(payment_method);
+    }
+    
+    if (price !== undefined) {
+      updateQuery += 'price = ?, ';
+      updateValues.push(price);
+    }
+    
+    if (notes !== undefined) {
+      updateQuery += 'notes = ?, ';
+      updateValues.push(notes);
+    }
+    
+    // Always update the updated_at timestamp
+    updateQuery += 'updated_at = NOW(), ';
     
     // Remove trailing comma and space
     updateQuery = updateQuery.slice(0, -2);
