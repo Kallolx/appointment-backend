@@ -400,43 +400,75 @@ async function initializeDatabase() {
     
     // Add missing columns to support_tickets table if they don't exist
     try {
-      await dbConnection.query(`
-        ALTER TABLE support_tickets 
-        ADD COLUMN IF NOT EXISTS priority ENUM('low', 'medium', 'high') DEFAULT 'medium'
+      // Check if priority column exists
+      const [priorityColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM support_tickets LIKE 'priority'
       `);
+      
+      if (priorityColumn.length === 0) {
+        await dbConnection.query(`
+          ALTER TABLE support_tickets 
+          ADD COLUMN priority ENUM('low', 'medium', 'high') DEFAULT 'medium'
+        `);
+        console.log('Added priority column to support_tickets table');
+      }
     } catch (error) {
-      // Column might already exist, ignore error
       console.log('Priority column already exists or error adding it:', error.message);
     }
     
     try {
-      await dbConnection.query(`
-        ALTER TABLE support_tickets 
-        ADD COLUMN IF NOT EXISTS admin_response TEXT NULL
+      // Check if admin_response column exists
+      const [adminResponseColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM support_tickets LIKE 'admin_response'
       `);
+      
+      if (adminResponseColumn.length === 0) {
+        await dbConnection.query(`
+          ALTER TABLE support_tickets 
+          ADD COLUMN admin_response TEXT NULL
+        `);
+        console.log('Added admin_response column to support_tickets table');
+      }
     } catch (error) {
-      // Column might already exist, ignore error
       console.log('Admin response column already exists or error adding it:', error.message);
     }
     
     try {
-      await dbConnection.query(`
-        ALTER TABLE support_tickets 
-        ADD COLUMN IF NOT EXISTS admin_id INT NULL
+      // Check if admin_id column exists
+      const [adminIdColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM support_tickets LIKE 'admin_id'
       `);
+      
+      if (adminIdColumn.length === 0) {
+        await dbConnection.query(`
+          ALTER TABLE support_tickets 
+          ADD COLUMN admin_id INT NULL
+        `);
+        console.log('Added admin_id column to support_tickets table');
+      }
     } catch (error) {
-      // Column might already exist, ignore error
       console.log('Admin ID column already exists or error adding it:', error.message);
     }
     
     try {
-      await dbConnection.query(`
-        ALTER TABLE support_tickets 
-        ADD CONSTRAINT fk_support_tickets_admin 
-        FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
+      // Check if foreign key constraint already exists
+      const [existingConstraint] = await dbConnection.query(`
+        SELECT CONSTRAINT_NAME 
+        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+        WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_NAME = 'support_tickets' 
+        AND CONSTRAINT_NAME = 'fk_support_tickets_admin'
       `);
+      
+      if (existingConstraint.length === 0) {
+        await dbConnection.query(`
+          ALTER TABLE support_tickets 
+          ADD CONSTRAINT fk_support_tickets_admin 
+          FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
+        `);
+        console.log('Added foreign key constraint fk_support_tickets_admin');
+      }
     } catch (error) {
-      // Constraint might already exist, ignore error
       console.log('Admin foreign key already exists or error adding it:', error.message);
     }
     
@@ -870,7 +902,7 @@ async function initializeDatabase() {
         linkedin_url VARCHAR(500) DEFAULT '',
         google_url VARCHAR(500) DEFAULT '',
         whatsapp_url VARCHAR(500) DEFAULT '',
-        contact_address TEXT DEFAULT '1403, Fortune Executive Tower, Cluster T, JLT, Dubai, UAE.',
+        contact_address TEXT,
         contact_phone VARCHAR(50) DEFAULT '+971 4 506 1500',
         contact_email VARCHAR(255) DEFAULT 'support@servicemarket.com',
         is_active BOOLEAN DEFAULT TRUE,
@@ -880,6 +912,20 @@ async function initializeDatabase() {
         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
       )
     `);
+    
+    // Insert default contact_address if table is empty
+    try {
+      const [existingSettings] = await dbConnection.query('SELECT COUNT(*) as count FROM website_settings');
+      if (existingSettings[0].count === 0) {
+        await dbConnection.query(`
+          INSERT INTO website_settings (contact_address) 
+          VALUES ('1403, Fortune Executive Tower, Cluster T, JLT, Dubai, UAE.')
+        `);
+        console.log('Inserted default website settings');
+      }
+    } catch (error) {
+      console.log('Note: Could not insert default website settings (table may already have data)');
+    }
     
     console.log('Database and tables initialized successfully');
     
@@ -934,9 +980,17 @@ async function initializeDatabase() {
       if (contactAddressColumn.length === 0) {
         console.log('Adding contact fields to website_settings table...');
         
+        // Add TEXT column without default value (MySQL doesn't support defaults for TEXT)
         await dbConnection.query(`
           ALTER TABLE website_settings 
-          ADD COLUMN contact_address TEXT DEFAULT '1403, Fortune Executive Tower, Cluster T, JLT, Dubai, UAE.'
+          ADD COLUMN contact_address TEXT
+        `);
+        
+        // Update contact_address with default value after column creation
+        await dbConnection.query(`
+          UPDATE website_settings 
+          SET contact_address = '1403, Fortune Executive Tower, Cluster T, JLT, Dubai, UAE.' 
+          WHERE contact_address IS NULL
         `);
         
         await dbConnection.query(`

@@ -1,7 +1,7 @@
 -- Migration script to update users table for OTP-only authentication
 -- This makes email, address, and password optional
 
-USE gsmarena_appointpro;
+USE mpcpest;
 
 -- Make email column nullable and remove unique constraint temporarily
 ALTER TABLE users 
