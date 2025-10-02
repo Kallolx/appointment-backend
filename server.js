@@ -5,7 +5,6 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 const { sendOTP, verifyOTP } = require('./services/otpService');
-const { getApiConfig, clearApiConfigCache, sendDynamicOTP } = require('./services/dynamicApiService');
 const { 
   sendAppointmentConfirmation, 
   sendAppointmentReminder, 
@@ -1499,7 +1498,7 @@ async function seedInitialData(connection) {
 
 // API Routes
 
-// Send OTP to phone number
+// Send OTP to phone number - WhatsApp first, SMS fallback
 app.post('/api/auth/send-otp', async (req, res) => {
   try {
     const { phone } = req.body;
@@ -1508,39 +1507,22 @@ app.post('/api/auth/send-otp', async (req, res) => {
       return res.status(400).json({ message: 'Phone number is required' });
     }
     
-    // First try to use dynamic Twilio configuration
-    let result;
-    try {
-      // Generate OTP
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      
-      // Send OTP using dynamic Twilio configuration
-      const smsResult = await sendDynamicOTP(phone, otp, pool);
-      
-      if (smsResult.success) {
-        // Store OTP in temporary storage (you might want to use Redis or database)
-        // For now, we'll use the same method as the original service
-        result = await sendOTP(phone); // This will use the fallback service for OTP storage
-        result.dynamicConfig = true;
-      } else {
-        // Fallback to original OTP service
-        result = await sendOTP(phone);
-        result.dynamicConfig = false;
-      }
-    } catch (error) {
-      console.log('Dynamic Twilio failed, falling back to original service:', error.message);
-      // Fallback to original OTP service
-      result = await sendOTP(phone);
-      result.dynamicConfig = false;
-    }
+    // Use WhatsApp-first OTP service
+    const result = await sendOTP(phone);
     
     if (result.success) {
-      // Include test OTP in response for development mode
       const response = { 
         message: result.message,
         success: true,
-        usingDynamicConfig: result.dynamicConfig || false
+        method: result.method || 'unknown'
       };
+      
+      // Add fallback information if used
+      if (result.fallbackUsed) {
+        response.fallbackUsed = true;
+        response.primaryMethod = result.primaryMethod;
+        response.fallbackMethod = result.fallbackMethod;
+      }
       
       // Add test info for development
       if (result.testMode) {
@@ -1552,7 +1534,9 @@ app.post('/api/auth/send-otp', async (req, res) => {
     } else {
       return res.status(500).json({ 
         message: result.message,
-        success: false
+        success: false,
+        whatsappError: result.whatsappError,
+        smsError: result.smsError
       });
     }
   } catch (error) {
