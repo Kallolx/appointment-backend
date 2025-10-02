@@ -31,7 +31,7 @@ const corsOptions = {
       'https://appoinments.gsmarena1.com',
       'https://appointment-dubai.vercel.app',
       'https://appointpro-dubai.com',
-      'https://31.97.206.5:2025',
+      'https://booking.mpcpest.ae'
     ];
     
     if (allowedOrigins.indexOf(origin) !== -1) {
