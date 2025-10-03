@@ -6469,6 +6469,35 @@ app.put('/api/admin/room-types/:id', authenticateToken, isAdmin, async (req, res
   }
 });
 
+// Delete room type (admin)
+app.delete('/api/admin/room-types/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if room type exists
+    const [existing] = await pool.execute('SELECT id FROM room_types WHERE id = ?', [id]);
+    if (existing.length === 0) {
+      return res.status(404).json({ message: 'Room type not found' });
+    }
+    
+    // Check if room type is being used in service pricing
+    const [pricingCheck] = await pool.execute('SELECT id FROM service_pricing WHERE room_type_id = ?', [id]);
+    if (pricingCheck.length > 0) {
+      return res.status(400).json({ 
+        message: 'Cannot delete room type as it is being used in service pricing. Please remove associated pricing first.' 
+      });
+    }
+    
+    // Delete the room type
+    await pool.execute('DELETE FROM room_types WHERE id = ?', [id]);
+    
+    return res.json({ message: 'Room type deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting room type:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Get service pricing (admin)
 app.get('/api/admin/service-pricing', authenticateToken, isAdmin, async (req, res) => {
   try {
