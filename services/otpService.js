@@ -10,7 +10,7 @@ const client = twilio(accountSid, authToken);
 const whatsappNumber = `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`; // whatsapp:+13083205264
 
 // Test mode configuration
-const TEST_MODE = true;
+const TEST_MODE = false;
 const TEST_PHONE_NUMBERS = [
   '+971501234567',
 ];
@@ -44,11 +44,15 @@ async function sendWhatsAppOTP(phoneNumber) {
 
     console.log(`📱 Sending WhatsApp OTP to ${formattedPhone}`);
 
-    // Send WhatsApp message using approved template format
+    // Send WhatsApp message using approved template
+    // NOTE: Replace 'HX...' with your actual OTP template SID once created
     const message = await client.messages.create({
       from: whatsappNumber,
       to: `whatsapp:${formattedPhone}`,
-      body: `Your verification code is ${otp}`
+      contentSid: 'HXec15ca8b9fbdd2f74304ea70100a3f72', // Replace with your OTP template SID
+      contentVariables: JSON.stringify({
+        "1": otp
+      })
     });
 
     console.log(`✅ WhatsApp OTP sent: ${message.sid}`);
