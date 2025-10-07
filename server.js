@@ -1133,6 +1133,29 @@ async function initializeDatabase() {
       console.log('Error during available_time_slots service_category_id migration:', error.message);
     }
 
+    // Migration: Add max_appointments to available_time_slots table if it doesn't exist
+    try {
+      const [maxAppointmentsColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM available_time_slots LIKE 'max_appointments'
+      `);
+      
+      if (maxAppointmentsColumn.length === 0) {
+        console.log('Adding max_appointments column to available_time_slots table...');
+        
+        // Add max_appointments column
+        await dbConnection.query(`
+          ALTER TABLE available_time_slots 
+          ADD COLUMN max_appointments INT DEFAULT 1 AFTER extra_price
+        `);
+        
+        console.log('Migration completed: available_time_slots table now includes max_appointments column');
+      } else {
+        console.log('max_appointments column already exists in available_time_slots table');
+      }
+    } catch (error) {
+      console.log('Error during available_time_slots max_appointments migration:', error.message);
+    }
+
     // Migration: Add discount_price field to service_pricing table if it doesn't exist
     try {
       const [columns] = await dbConnection.query(
@@ -2863,7 +2886,7 @@ app.get('/api/available-time-slots', async (req, res) => {
     const dateOnly = date.includes('T') ? date.split('T')[0] : date;
     console.log('🔍 Public API - Time slots for date:', dateOnly, 'categoryId:', categoryId);
 
-    let query = `SELECT id, start_time, end_time, is_available, extra_price, date, service_category_id
+    let query = `SELECT id, start_time, end_time, is_available, extra_price, max_appointments, date, service_category_id
                  FROM available_time_slots 
                  WHERE date = ? AND is_available = 1`;
     let params = [dateOnly];
@@ -3022,7 +3045,7 @@ app.get('/api/admin/available-time-slots', authenticateToken, isAdmin, async (re
     const { date, categoryId } = req.query;
     let query = `
       SELECT ats.id, ats.start_time, ats.end_time, ats.is_available, ats.extra_price, 
-             ats.created_at, ats.date, ats.service_category_id,
+             ats.max_appointments, ats.created_at, ats.date, ats.service_category_id,
              sc.name as service_category_name, sc.slug as service_category_slug
       FROM available_time_slots ats
       LEFT JOIN service_categories sc ON ats.service_category_id = sc.id
@@ -3063,7 +3086,7 @@ app.post('/api/admin/available-time-slots', authenticateToken, isAdmin, async (r
       return res.status(500).json({ message: 'Database not available' });
     }
     
-    const { start_time, end_time, is_available, extra_price = 0, date, service_category_id } = req.body;
+    const { start_time, end_time, is_available, extra_price = 0, max_appointments = 1, date, service_category_id } = req.body;
     
     // Validate required fields
     if (!start_time || !end_time || !date) {
@@ -3100,8 +3123,8 @@ app.post('/api/admin/available-time-slots', authenticateToken, isAdmin, async (r
 
     // Insert new time slot
     const [result] = await pool.execute(
-      'INSERT INTO available_time_slots (start_time, end_time, is_available, extra_price, date, service_category_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [start_time, end_time, is_available, extra_price, date, service_category_id]
+      'INSERT INTO available_time_slots (start_time, end_time, is_available, extra_price, max_appointments, date, service_category_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [start_time, end_time, is_available, extra_price, max_appointments, date, service_category_id]
     );
 
     res.status(201).json({
@@ -3128,7 +3151,7 @@ app.put('/api/admin/available-time-slots/:id', authenticateToken, isAdmin, async
     }
     
     const { id } = req.params;
-    const { start_time, end_time, is_available, extra_price, service_category_id } = req.body;
+    const { start_time, end_time, is_available, extra_price, max_appointments, service_category_id } = req.body;
 
     // Check if time slot exists
     const [existing] = await pool.execute(
@@ -3182,10 +3205,11 @@ app.put('/api/admin/available-time-slots/:id', authenticateToken, isAdmin, async
            end_time = COALESCE(?, end_time),
            is_available = COALESCE(?, is_available),
            extra_price = COALESCE(?, extra_price),
+           max_appointments = COALESCE(?, max_appointments),
            service_category_id = ?,
            updated_at = NOW()
        WHERE id = ?`,
-      [start_time, end_time, is_available, extra_price, service_category_id, id]
+      [start_time, end_time, is_available, extra_price, max_appointments, service_category_id, id]
     );
 
     if (result.affectedRows === 0) {
