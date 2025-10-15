@@ -3335,7 +3335,7 @@ app.post('/api/admin/appointments/:id/share', authenticateToken, isAdmin, async 
     );
     
     // Generate frontend URL instead of backend URL
-    const frontendHost = 'https://appoinments.gsmarena1.com';
+    const frontendHost = 'https://booking.mpcpest.ae';
     const shareUrl = `${frontendHost}/shared-appointment/${shareToken}`;
     
     res.json({
@@ -6866,6 +6866,27 @@ app.put('/api/admin/website-settings', authenticateToken, isSuperAdmin, async (r
   } catch (error) {
     console.error('Error updating website settings:', error);
     return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get active offers/coupon codes
+app.get('/api/offers/active', async (req, res) => {
+  try {
+    const [offers] = await pool.execute(
+      `SELECT id, code, name, description, discount_type, discount_value, 
+              minimum_order_amount, maximum_discount_amount, start_date, end_date, usage_limit, used_count
+       FROM offer_codes 
+       WHERE DATE(start_date) <= CURDATE() 
+         AND DATE(end_date) >= CURDATE()
+         AND (usage_limit IS NULL OR used_count < usage_limit)
+       ORDER BY discount_value DESC`
+    );
+    
+    console.log('Active offers found:', offers.length);
+    return res.json(offers);
+  } catch (error) {
+    console.error('Error fetching active offers:', error);
+    return res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
