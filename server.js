@@ -1011,6 +1011,38 @@ async function initializeDatabase() {
       console.log('Error during website_settings contact fields migration:', error.message);
     }
 
+    // Migration: Add copyright and developer fields to website_settings table
+    try {
+      const [copyrightColumn] = await dbConnection.query(`
+        SHOW COLUMNS FROM website_settings LIKE 'copyright_text'
+      `);
+      
+      if (copyrightColumn.length === 0) {
+        console.log('Adding copyright and developer fields to website_settings table...');
+        
+        await dbConnection.query(`
+          ALTER TABLE website_settings 
+          ADD COLUMN copyright_text VARCHAR(500) DEFAULT '© 2025 JL Services. All rights reserved.'
+        `);
+        
+        await dbConnection.query(`
+          ALTER TABLE website_settings 
+          ADD COLUMN developer_name VARCHAR(255) DEFAULT 'WebByte Solutions'
+        `);
+        
+        await dbConnection.query(`
+          ALTER TABLE website_settings 
+          ADD COLUMN developer_url VARCHAR(500) DEFAULT 'https://webbyte.com'
+        `);
+        
+        console.log('Migration completed: website_settings table now includes copyright and developer fields');
+      } else {
+        console.log('Copyright and developer fields already exist in website_settings table');
+      }
+    } catch (error) {
+      console.log('Error during website_settings copyright/developer migration:', error.message);
+    }
+
     // Migration: Add rating_text field to service_items table if it doesn't exist
     try {
       const [ratingTextColumn] = await dbConnection.query(`
@@ -6795,7 +6827,10 @@ app.get('/api/admin/website-settings', authenticateToken, isSuperAdmin, async (r
         twitter_url: '',
         linkedin_url: '',
         google_url: '',
-        whatsapp_url: ''
+        whatsapp_url: '',
+        copyright_text: '© 2025 JL Services. All rights reserved.',
+        developer_name: 'WebByte Solutions',
+        developer_url: 'https://webbyte.com'
       });
     }
     
@@ -6822,7 +6857,10 @@ app.put('/api/admin/website-settings', authenticateToken, isSuperAdmin, async (r
       whatsapp_url,
       contact_address,
       contact_phone,
-      contact_email
+      contact_email,
+      copyright_text,
+      developer_name,
+      developer_url
     } = req.body;
     
     // Validate required fields
@@ -6839,12 +6877,17 @@ app.put('/api/admin/website-settings', authenticateToken, isSuperAdmin, async (r
         `UPDATE website_settings SET 
          site_name = ?, logo_url = ?, tagline = ?, primary_color = ?,
          facebook_url = ?, instagram_url = ?, twitter_url = ?, linkedin_url = ?,
-         google_url = ?, whatsapp_url = ?, contact_address = ?, contact_phone = ?, contact_email = ?, updated_at = NOW()
+         google_url = ?, whatsapp_url = ?, contact_address = ?, contact_phone = ?, contact_email = ?,
+         copyright_text = ?, developer_name = ?, developer_url = ?, updated_at = NOW()
          WHERE id = ?`,
         [
           site_name, logo_url || '/jl-logo.svg', tagline, primary_color,
           facebook_url || '', instagram_url || '', twitter_url || '', linkedin_url || '',
-          google_url || '', whatsapp_url || '', contact_address || '', contact_phone || '', contact_email || '', existing[0].id
+          google_url || '', whatsapp_url || '', contact_address || '', contact_phone || '', contact_email || '',
+          copyright_text || '© 2025 JL Services. All rights reserved.',
+          developer_name || 'WebByte Solutions',
+          developer_url || 'https://webbyte.com',
+          existing[0].id
         ]
       );
     } else {
@@ -6852,12 +6895,17 @@ app.put('/api/admin/website-settings', authenticateToken, isSuperAdmin, async (r
       await pool.execute(
         `INSERT INTO website_settings 
          (site_name, logo_url, tagline, primary_color, facebook_url, instagram_url, 
-          twitter_url, linkedin_url, google_url, whatsapp_url, contact_address, contact_phone, contact_email, created_by) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          twitter_url, linkedin_url, google_url, whatsapp_url, contact_address, contact_phone, contact_email,
+          copyright_text, developer_name, developer_url, created_by) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           site_name, logo_url || '/jl-logo.svg', tagline, primary_color,
           facebook_url || '', instagram_url || '', twitter_url || '', linkedin_url || '',
-          google_url || '', whatsapp_url || '', contact_address || '', contact_phone || '', contact_email || '', req.user.id
+          google_url || '', whatsapp_url || '', contact_address || '', contact_phone || '', contact_email || '',
+          copyright_text || '© 2025 JL Services. All rights reserved.',
+          developer_name || 'WebByte Solutions',
+          developer_url || 'https://webbyte.com',
+          req.user.id
         ]
       );
     }
